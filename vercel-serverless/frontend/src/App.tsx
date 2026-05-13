@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { Analytics } from '@vercel/analytics/react';
 import { usePlayer } from './services/player';
 import { useAuth } from './lib/authStore';
 import { HomePage } from './pages/HomePage';
@@ -96,6 +97,7 @@ export function App() {
         {/* Everything else — uses the normal app layout */}
         <Route path="/*" element={<AppContent />} />
       </Routes>
+      <Analytics />
     </BrowserRouter>
   );
 }
