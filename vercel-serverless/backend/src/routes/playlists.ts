@@ -28,10 +28,16 @@ export default async function playlistsRoutes(fastify: FastifyInstance) {
       const userId = (request.user as any).id;
       const playlists = await prisma.playlist.findMany({
         where: { userId },
-        include: {
-          _count: {
-            select: { tracks: true }
-          }
+        select: {
+          id: true,
+          userId: true,
+          name: true,
+          description: true,
+          thumbnail: true,
+          isPublic: true,
+          createdAt: true,
+          updatedAt: true,
+          _count: { select: { tracks: true } },
         },
         orderBy: { updatedAt: 'desc' },
         cacheStrategy: { ttl: 60, swr: 30 }
@@ -95,18 +101,19 @@ export default async function playlistsRoutes(fastify: FastifyInstance) {
             { isPublic: true }
           ]
         },
-        include: {
-          tracks: {
-            orderBy: { position: 'asc' }
-          },
+        select: {
+          id: true,
+          userId: true,
+          name: true,
+          description: true,
+          thumbnail: true,
+          isPublic: true,
+          createdAt: true,
+          updatedAt: true,
+          tracks: { orderBy: { position: 'asc' } },
           user: {
-            select: {
-              id: true,
-              username: true,
-              name: true,
-              avatar: true
-            }
-          }
+            select: { id: true, username: true, name: true, avatar: true }
+          },
         },
         cacheStrategy: { ttl: 60, swr: 30 }
       });
