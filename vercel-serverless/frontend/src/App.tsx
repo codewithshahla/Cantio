@@ -24,6 +24,8 @@ import MobileHeader from './components/MobileHeader';
 import { BlendInviteNotifications } from './components/BlendInviteNotifications';
 import DownloadPopup from './components/DownloadPopup';
 import { LandingPage } from './pages/LandingPage';
+import OnboardingPage from './pages/OnboardingPage';
+import PublicPlaylistPage from './pages/PublicPlaylistPage';
 
 function AppContent() {
   const isPlayerVisible = usePlayer((state) => state.isPlayerVisible);
@@ -69,6 +71,8 @@ function AppContent() {
             <Route path="/ytmusic/:type/:id" element={<YTMusicDetailPage />} />
             <Route path="/blends" element={<BlendsPage />} />
             <Route path="/blends/:id" element={<BlendDetailPage />} />
+            <Route path="/onboarding" element={<OnboardingPage />} />
+            <Route path="/p/:slug" element={<PublicPlaylistPage />} />
           </Routes>
         </div>
       </div>

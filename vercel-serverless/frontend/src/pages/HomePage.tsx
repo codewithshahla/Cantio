@@ -50,6 +50,7 @@ export function HomePage() {
 
   const loadRecommendations = async () => {
     setLoading(true);
+    // Never set error — graceful degradation only
     setError(null);
     
     try {
@@ -60,16 +61,26 @@ export function HomePage() {
         const data = await getGuestRecommendations();
         setRecommendations(data);
       }
-      
-      // Load discovered tracks from IndexedDB
+    } catch (err) {
+      // Log but never show error to user — just show empty state
+      console.warn('Recommendations unavailable:', err);
+      setRecommendations({
+        recentlyPlayed: [],
+        mostPlayed: [],
+        topArtists: []
+      });
+    }
+
+    // Load discovered tracks independently so a recommendation failure
+    // doesn't block discovery
+    try {
       const discovered = await cache.getDiscoveredTracks();
       setDiscoveredTracks(discovered);
-    } catch (err) {
-      console.error('Failed to load recommendations:', err);
-      setError('Failed to load recommendations');
-    } finally {
-      setLoading(false);
+    } catch {
+      setDiscoveredTracks([]);
     }
+
+    setLoading(false);
   };
 
   const loadPopularTracks = async () => {
@@ -243,22 +254,7 @@ export function HomePage() {
         </div>
       )}
 
-      {/* Error State */}
-      {error && (
-        <motion.div 
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          className="text-center py-12 px-6 rounded-xl bg-red-500/10 border border-red-500/20"
-        >
-          <p className="text-red-400 mb-4">{error}</p>
-          <button
-            onClick={loadRecommendations}
-            className="px-5 py-2 bg-red-500/20 hover:bg-red-500/30 text-red-400 rounded-lg transition-colors text-sm font-medium"
-          >
-            Try Again
-          </button>
-        </motion.div>
-      )}
+      {/* Error state removed — graceful empty state handles all cases */}
 
       {/* Recommendations */}
       {!loading && !error && recommendations && (

@@ -408,4 +408,151 @@ export default async function playlistsRoutes(fastify: FastifyInstance) {
       return { error: 'Failed to fetch popular tracks' };
     }
   });
+
+  // ─── F5: Public Shareable Playlists ──────────────────────────────
+
+  // Generate / toggle share link for a playlist
+  fastify.post('/:id/share', {
+    onRequest: [fastify.authenticate]
+  }, async (request, reply) => {
+    try {
+      const { id } = request.params as { id: string };
+      const userId = (request.user as any).id;
+
+      const playlist = await prisma.playlist.findFirst({
+        where: { id, userId },
+        select: { id: true, shareSlug: true, name: true },
+      });
+
+      if (!playlist) {
+        reply.code(404);
+        return { error: 'Playlist not found' };
+      }
+
+      // If already has a slug, return it; otherwise generate one
+      if (playlist.shareSlug) {
+        return { shareSlug: playlist.shareSlug };
+      }
+
+      // Generate a URL-safe slug: lowercase name + random suffix
+      const base = playlist.name
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-|-$/g, '')
+        .slice(0, 40);
+      const suffix = Math.random().toString(36).slice(2, 8);
+      const slug = `${base}-${suffix}`;
+
+      await prisma.playlist.update({
+        where: { id, userId },
+        data: { shareSlug: slug, isPublic: true },
+      });
+
+      return { shareSlug: slug };
+    } catch (error) {
+      fastify.log.error(error);
+      reply.code(500);
+      return { error: 'Failed to share playlist' };
+    }
+  });
+
+  // Remove share link (unshare)
+  fastify.delete('/:id/share', {
+    onRequest: [fastify.authenticate]
+  }, async (request, reply) => {
+    try {
+      const { id } = request.params as { id: string };
+      const userId = (request.user as any).id;
+
+      await prisma.playlist.update({
+        where: { id, userId },
+        data: { shareSlug: null, isPublic: false },
+      });
+
+      return { success: true };
+    } catch (error: any) {
+      if (error.code === 'P2025') {
+        reply.code(404);
+        return { error: 'Playlist not found' };
+      }
+      fastify.log.error(error);
+      reply.code(500);
+      return { error: 'Failed to unshare playlist' };
+    }
+  });
+
+  // View a public playlist by slug (NO AUTH REQUIRED)
+  fastify.get('/public/:slug', async (request, reply) => {
+    try {
+      const { slug } = request.params as { slug: string };
+
+      const playlist = await prisma.playlist.findFirst({
+        where: {
+          shareSlug: slug,
+          isPublic: true,
+        },
+        include: {
+          tracks: { orderBy: { position: 'asc' } },
+          user: {
+            select: {
+              id: true,
+              username: true,
+              name: true,
+              avatar: true,
+            },
+          },
+        },
+      });
+
+      if (!playlist) {
+        reply.code(404);
+        return { error: 'Playlist not found or not public' };
+      }
+
+      return { playlist };
+    } catch (error) {
+      fastify.log.error(error);
+      reply.code(500);
+      return { error: 'Failed to fetch public playlist' };
+    }
+  });
+
+  // Search public playlists
+  fastify.get('/public/search', async (request, reply) => {
+    try {
+      const { q, limit } = request.query as { q?: string; limit?: string };
+      if (!q) {
+        reply.code(400);
+        return { error: 'Missing search query "q"' };
+      }
+
+      const resultLimit = limit ? Math.min(parseInt(limit, 10), 50) : 20;
+
+      const playlists = await prisma.playlist.findMany({
+        where: {
+          isPublic: true,
+          shareSlug: { not: null },
+          name: { contains: q, mode: 'insensitive' },
+        },
+        include: {
+          _count: { select: { tracks: true } },
+          user: {
+            select: {
+              username: true,
+              name: true,
+              avatar: true,
+            },
+          },
+        },
+        orderBy: { updatedAt: 'desc' },
+        take: resultLimit,
+      });
+
+      return { playlists };
+    } catch (error) {
+      fastify.log.error(error);
+      reply.code(500);
+      return { error: 'Failed to search playlists' };
+    }
+  });
 }

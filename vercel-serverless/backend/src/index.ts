@@ -7,7 +7,7 @@ import jwt from '@fastify/jwt';
 import rateLimit from 'fastify-rate-limit';
 import { config } from 'dotenv';
 import { randomBytes } from 'crypto';
-import { search, getMetadata, searchMusic, getYTMusicPlaylistTracks, getYTMusicAlbumTracks, getYTMusicArtistTopTracks } from './lib/youtube.js';
+import { search, getMetadata, searchMusic, getYTMusicPlaylistTracks, getYTMusicAlbumTracks, getYTMusicArtistTopTracks, getRelatedTracks } from './lib/youtube.js';
 import authRoutes from './routes/auth.js';
 import likesRoutes from './routes/likes.js';
 import playlistsRoutes from './routes/playlists.js';
@@ -15,6 +15,7 @@ import historyRoutes from './routes/history.js';
 import recommendationsRoutes from './routes/recommendations.js';
 import syncRoutes from './routes/sync.js';
 import blendsRoutes from './routes/blends.js';
+import preferencesRoutes from './routes/preferences.js';
 
 // Load environment variables
 config();
@@ -35,7 +36,7 @@ let initialized = false;
 // Initialize app (plugins, routes, etc.)
 async function initializeApp() {
   if (initialized) return;
-  
+
   // Register CORS
   await app.register(cors, {
     origin: process.env.CORS_ORIGIN || '*',
@@ -58,7 +59,7 @@ async function initializeApp() {
   });
 
   // Add authentication decorator
-  app.decorate('authenticate', async function(request: any, reply: any) {
+  app.decorate('authenticate', async function (request: any, reply: any) {
     try {
       await request.jwtVerify();
     } catch (err) {
@@ -74,6 +75,7 @@ async function initializeApp() {
   await app.register(recommendationsRoutes, { prefix: '/api/recommendations' });
   await app.register(syncRoutes, { prefix: '/api/sync' });
   await app.register(blendsRoutes, { prefix: '/api/blends' });
+  await app.register(preferencesRoutes, { prefix: '/api/preferences' });
 
   // Root health endpoint (homepage)
   app.get('/', async (request, reply) => {
@@ -114,7 +116,7 @@ async function initializeApp() {
   // Search endpoint
   app.get('/api/search', async (request, reply) => {
     const { q, limit } = request.query as { q?: string; limit?: string };
-    
+
     if (!q) {
       reply.code(400);
       return { error: 'Missing search query parameter "q"' };
@@ -202,6 +204,22 @@ async function initializeApp() {
     };
   });
 
+  // F1: Related tracks for smart auto-queue
+  app.get('/api/related/:videoId', async (request, reply) => {
+    const { videoId } = request.params as { videoId: string };
+    const { limit } = request.query as { limit?: string };
+
+    try {
+      const resultLimit = limit ? parseInt(limit, 10) : 20;
+      const tracks = await getRelatedTracks(videoId, resultLimit);
+      return { tracks };
+    } catch (error: any) {
+      request.log.error(error);
+      reply.code(500);
+      return { error: 'Failed to fetch related tracks', message: error.message };
+    }
+  });
+
   // Track metadata endpoint
   app.get('/api/track/:id', async (request, reply) => {
     const { id } = request.params as { id: string };
@@ -214,10 +232,10 @@ async function initializeApp() {
     } catch (error: any) {
       request.log.error(`Failed to fetch metadata for ${id}:`, error);
       reply.code(500);
-      return { 
-        error: 'Failed to fetch track metadata', 
+      return {
+        error: 'Failed to fetch track metadata',
         message: error.message,
-        videoId: id 
+        videoId: id
       };
     }
   });
@@ -225,7 +243,7 @@ async function initializeApp() {
   // Track streaming endpoint - iframe only
   app.get('/api/track/:id/stream', async (request, reply) => {
     const { id } = request.params as { id: string };
-    
+
     return {
       mode: 'iframe',
       url: `https://www.youtube.com/embed/${id}?autoplay=1&enablejsapi=1`
@@ -257,7 +275,7 @@ async function initializeApp() {
   // Lyrics proxy endpoint (to bypass CORS from LRCLIB)
   app.get('/api/lyrics', async (request, reply) => {
     const { track_name, artist_name } = request.query as { track_name?: string; artist_name?: string };
-    
+
     if (!track_name || !artist_name) {
       reply.code(400);
       return { error: 'Missing track_name or artist_name parameter' };
@@ -268,7 +286,7 @@ async function initializeApp() {
         track_name,
         artist_name,
       });
-      
+
       const response = await fetch(`https://lrclib.net/api/search?${params.toString()}`, {
         headers: {
           'User-Agent': 'MusicMu/1.0.0 (https://musicmu.app)',

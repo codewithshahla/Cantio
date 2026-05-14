@@ -25,6 +25,7 @@ model User {
   blendInvitesReceived BlendInvite[]   @relation("InviteReceiver")
   blendsAsUser1       Blend[]          @relation("BlendUser1")
   blendsAsUser2       Blend[]          @relation("BlendUser2")
+  preferences         UserPreferences?
   
   @@index([email])
   @@index([username])
@@ -56,6 +57,7 @@ model Playlist {
   description String?
   thumbnail   String?
   isPublic    Boolean  @default(false)
+  shareSlug   String?  @unique // F5: nullable shareable URL slug
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   
@@ -64,7 +66,24 @@ model Playlist {
   blend       Blend?          @relation("BlendPlaylist")
   
   @@index([userId])
+  @@index([shareSlug])
   @@map("playlists")
+}
+
+// F3: User onboarding preferences (new table — fully additive)
+model UserPreferences {
+  id                String   @id @default(cuid())
+  userId            String   @unique
+  favoriteLanguages String[] @default([])
+  favoriteArtists   String[] @default([])
+  favoriteGenres    String[] @default([])
+  onboardingDone    Boolean  @default(false)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_preferences")
 }
 
 model PlaylistTrack {

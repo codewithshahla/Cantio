@@ -4,6 +4,7 @@ import { motion } from 'framer-motion';
 import { Music, Play, Trash2, ChevronLeft, Loader2, Heart } from 'lucide-react';
 import { usePlaylist, PlaylistTrack } from '../lib/playlistStore';
 import { usePlayer } from '../services/player';
+import SharePlaylist from '../components/SharePlaylist';
 
 export function PlaylistDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -172,6 +173,14 @@ export function PlaylistDetailPage() {
           >
             <Play size={24} fill="black" className="text-black ml-1" />
           </motion.button>
+          {currentPlaylist && id && (
+            <SharePlaylist
+              playlistId={id}
+              playlistName={currentPlaylist.name}
+              isPublic={currentPlaylist.isPublic}
+              shareSlug={(currentPlaylist as any).shareSlug}
+            />
+          )}
         </div>
       )}
 

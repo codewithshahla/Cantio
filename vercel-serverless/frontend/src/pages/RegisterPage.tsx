@@ -62,7 +62,7 @@ export default function RegisterPage() {
     setLoading(true);
     try {
       await api.register(email, password, otp, name || undefined);
-      navigate('/');
+      navigate('/onboarding');
     } catch (err: any) {
       setError(err.message || 'Registration failed');
     } finally {

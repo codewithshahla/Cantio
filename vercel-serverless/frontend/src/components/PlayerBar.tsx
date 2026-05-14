@@ -10,6 +10,7 @@ import { usePlayer } from '../services/player';
 import { useNavigate } from 'react-router-dom';
 import { AddToPlaylistDropdown } from './AddToPlaylistDropdown';
 import { LyricsPanel } from './LyricsPanel';
+import SleepTimerButton from './SleepTimer';
 
 // Global state for full-screen player visibility
 let fullScreenListeners: Set<(val: boolean) => void> = new Set();
@@ -367,6 +368,7 @@ export default function PlayerBar() {
               >
                 <FileText size={18} />
               </button>
+              <SleepTimerButton />
               <button
                 onClick={handleShare}
                 className="p-2 text-white/60 hover:text-white transition rounded-full hover:bg-white/10"
@@ -679,6 +681,7 @@ export default function PlayerBar() {
                   <ListMusic size={20} className="sm:hidden" />
                   <ListMusic size={22} className="hidden sm:block" />
                 </button>
+                <SleepTimerButton />
               </div>
             </div>
 

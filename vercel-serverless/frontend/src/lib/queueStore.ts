@@ -18,6 +18,12 @@ export interface QueueState {
   shuffle: boolean;
   repeatMode: RepeatMode;
 
+  /**
+   * F2: Session ID for the current context queue batch.
+   * Prevents duplicate appends of the same recommendation set.
+   */
+  queueSessionId: string | null;
+
   // Actions
   playTrack: (track: Track) => void;
   addToQueue: (track: Track) => void;
@@ -28,6 +34,19 @@ export interface QueueState {
   toggleShuffle: () => void;
   setRepeatMode: (mode: RepeatMode) => void;
   clearQueue: () => void;
+
+  // ─── F2: Atomic queue mutations ──────────────────────────────────────
+  /** Append tracks to the end of the context queue, deduplicating. */
+  appendQueue: (tracks: Track[]) => void;
+  /** Replace the entire context queue, clearing manual queue. */
+  replaceQueue: (tracks: Track[], sessionId?: string) => void;
+  /**
+   * F1+F2: Enqueue recommendation tracks with dedup + session guard.
+   * If the same sessionId is already active, the call is a no-op.
+   */
+  enqueueRecommendations: (tracks: Track[], sessionId: string) => void;
+  /** Reorder the combined upcoming view (manual + context). */
+  reorderQueue: (fromIndex: number, toIndex: number) => void;
 }
 
 // -----------------------------------------------------------------
@@ -51,6 +70,31 @@ function removeTrackById(tracks: Track[], videoId: string): Track[] {
   return [...tracks.slice(0, idx), ...tracks.slice(idx + 1)];
 }
 
+/**
+ * F2: Deduplicate a track array against a set of existing video IDs.
+ * Returns only tracks whose videoId is NOT in `existingIds`,
+ * and also deduplicates within the input array itself.
+ */
+function deduplicateTracks(incoming: Track[], existingIds: Set<string>): Track[] {
+  const out: Track[] = [];
+  const seen = new Set(existingIds);
+  for (const t of incoming) {
+    if (seen.has(t.videoId)) continue;
+    seen.add(t.videoId);
+    out.push(t);
+  }
+  return out;
+}
+
+/** Collect all videoIds currently in the queue state */
+function allQueueIds(state: Pick<QueueState, 'currentTrack' | 'queue' | 'manualQueue'>): Set<string> {
+  const ids = new Set<string>();
+  if (state.currentTrack) ids.add(state.currentTrack.videoId);
+  for (const t of state.queue) ids.add(t.videoId);
+  for (const t of state.manualQueue) ids.add(t.videoId);
+  return ids;
+}
+
 // -----------------------------------------------------------------
 // Zustand store
 // -----------------------------------------------------------------
@@ -61,6 +105,7 @@ export const useQueue = create<QueueState>((set, get) => ({
   reverseQueue: [],
   shuffle: false,
   repeatMode: 'off',
+  queueSessionId: null,
 
   // ---------------------------------------------------------------
   // playTrack — user explicitly selects a track
@@ -114,6 +159,7 @@ export const useQueue = create<QueueState>((set, get) => ({
       queue: contextQueue,
       manualQueue: [],
       reverseQueue: startTrack ? newReverseQueue : reverseQueue,
+      queueSessionId: null, // reset session on manual queue load
     });
   },
 
@@ -274,6 +320,47 @@ export const useQueue = create<QueueState>((set, get) => ({
   // clearQueue — wipe all upcoming tracks, keep history
   // ---------------------------------------------------------------
   clearQueue: () => {
-    set({ queue: [], manualQueue: [] });
+    set({ queue: [], manualQueue: [], queueSessionId: null });
+  },
+
+  // ─── F2: Atomic queue mutations ──────────────────────────────────
+
+  appendQueue: (tracks: Track[]) => {
+    const state = get();
+    const existing = allQueueIds(state);
+    const deduped = deduplicateTracks(tracks, existing);
+    if (deduped.length === 0) return;
+    set({ queue: [...state.queue, ...deduped] });
+  },
+
+  replaceQueue: (tracks: Track[], sessionId?: string) => {
+    // Deduplicate within the incoming list itself
+    const deduped = deduplicateTracks(tracks, new Set<string>());
+    set({
+      queue: deduped,
+      manualQueue: [],
+      queueSessionId: sessionId ?? null,
+    });
+  },
+
+  enqueueRecommendations: (tracks: Track[], sessionId: string) => {
+    const state = get();
+    // Guard: if the same session already populated the queue, skip
+    if (state.queueSessionId === sessionId) {
+      console.log('[Queue] Duplicate recommendation session ignored:', sessionId);
+      return;
+    }
+    const existing = allQueueIds(state);
+    const deduped = deduplicateTracks(tracks, existing);
+    if (deduped.length === 0) return;
+    set({
+      queue: [...state.queue, ...deduped],
+      queueSessionId: sessionId,
+    });
+  },
+
+  reorderQueue: (fromIndex: number, toIndex: number) => {
+    // Alias for rearrangeQueue for cleaner API naming
+    get().rearrangeQueue(fromIndex, toIndex);
   },
 }));

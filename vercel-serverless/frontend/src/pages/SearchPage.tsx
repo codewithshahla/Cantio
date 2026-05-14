@@ -101,11 +101,57 @@ export function SearchPage() {
     }
   };
 
-  const handlePlay = async (track: Track, index: number) => {
+  const handlePlay = async (track: Track, _index: number) => {
+    // Play the selected track immediately
     await play(track);
-    const songsAfter = songResults.slice(index + 1);
-    for (const song of songsAfter) {
-      await addToQueue(song);
+
+    // F1: Smart Auto Queue — fetch related tracks in the background
+    // instead of blindly queueing remaining search results
+    try {
+      const apiBase = import.meta.env.VITE_API_URL
+        ? `${import.meta.env.VITE_API_URL}/api`
+        : '/api';
+      const resp = await fetch(`${apiBase}/related/${track.videoId}?limit=20`);
+      if (resp.ok) {
+        const data = await resp.json();
+        const related: Track[] = (data.tracks || []).map((t: any) => ({
+          videoId: t.videoId,
+          title: t.title,
+          artist: t.artist,
+          duration: t.duration || 0,
+          thumbnail: t.thumbnail || '',
+        }));
+
+        if (related.length > 0) {
+          // F2: Dedup against existing queue before adding
+          const { queue: currentQueue } = usePlayer.getState();
+          const existingIds = new Set([
+            track.videoId,
+            ...currentQueue.map((t: Track) => t.videoId),
+          ]);
+          const deduped = related.filter(t => !existingIds.has(t.videoId));
+
+          for (const t of deduped) {
+            await addToQueue(t);
+          }
+          console.log(`🎵 Smart queue: added ${deduped.length} related tracks`);
+          return;
+        }
+      }
+    } catch (err) {
+      console.warn('Smart queue fetch failed, falling back to search results:', err);
+    }
+
+    // Fallback: enqueue remaining search results (deduped)
+    const { queue: currentQueue } = usePlayer.getState();
+    const existingIds = new Set([
+      track.videoId,
+      ...currentQueue.map((t: Track) => t.videoId),
+    ]);
+    const remaining = songResults
+      .filter(s => s.videoId !== track.videoId && !existingIds.has(s.videoId));
+    for (const s of remaining) {
+      await addToQueue(s);
     }
   };
 

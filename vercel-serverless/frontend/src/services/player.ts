@@ -438,9 +438,19 @@ export const usePlayer = create<PlayerStore>((set, get) => ({
           } else if (event.data === YT.PlayerState.ENDED) {
             console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
             console.log('✅ TRACK COMPLETED:', get().currentTrack?.title);
-            console.log('⏭️  Playing next track from queue...');
-            console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-            get().next();
+
+            // Check sleep timer — if set to "end of song", pause here
+            import('../lib/sleepTimer').then(({ useSleepTimer }) => {
+              const shouldPause = useSleepTimer.getState().onTrackEnd();
+              if (shouldPause) {
+                console.log('💤 Sleep timer: pausing at end of song');
+                set({ state: 'paused' });
+                return;
+              }
+              console.log('⏭️  Playing next track from queue...');
+              console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+              get().next();
+            });
           }
         },
         onError: (event: any) => {
