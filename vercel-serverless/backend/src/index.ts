@@ -16,6 +16,7 @@ import recommendationsRoutes from './routes/recommendations.js';
 import syncRoutes from './routes/sync.js';
 import blendsRoutes from './routes/blends.js';
 import preferencesRoutes from './routes/preferences.js';
+import { runStartupMigrations } from './lib/migrations.js';
 
 // Load environment variables
 config();
@@ -306,6 +307,9 @@ async function initializeApp() {
       return { error: 'Failed to fetch lyrics', message: error.message };
     }
   });
+
+  // Apply additive DB migrations (idempotent — safe on every cold start)
+  await runStartupMigrations();
 
   initialized = true;
 }

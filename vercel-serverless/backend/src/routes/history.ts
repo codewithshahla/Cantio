@@ -101,7 +101,7 @@ export default async function historyRoutes(fastify: FastifyInstance) {
           select: { id: true }
         });
 
-        const idsToKeep = oldestToKeep.map(h => h.id);
+        const idsToKeep = oldestToKeep.map((h: any) => h.id);
 
         await prisma.playHistory.deleteMany({
           where: {

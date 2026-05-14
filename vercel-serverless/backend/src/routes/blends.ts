@@ -411,14 +411,14 @@ async function generateBlendTracks(blendId: string, user1Id: string, user2Id: st
   // Combine and deduplicate tracks
   const trackMap = new Map<string, { track: any; userId: string }>();
 
-  user1Liked.forEach(t => trackMap.set(t.trackId, { track: t, userId: user1Id }));
-  user2Liked.forEach(t => {
+  user1Liked.forEach((t: any) => trackMap.set(t.trackId, { track: t, userId: user1Id }));
+  user2Liked.forEach((t: any) => {
     if (!trackMap.has(t.trackId)) trackMap.set(t.trackId, { track: t, userId: user2Id });
   });
-  user1MostPlayed.forEach(t => {
+  user1MostPlayed.forEach((t: any) => {
     if (!trackMap.has(t.trackId)) trackMap.set(t.trackId, { track: t, userId: user1Id });
   });
-  user2MostPlayed.forEach(t => {
+  user2MostPlayed.forEach((t: any) => {
     if (!trackMap.has(t.trackId)) trackMap.set(t.trackId, { track: t, userId: user2Id });
   });
 
