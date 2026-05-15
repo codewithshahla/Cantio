@@ -25,6 +25,7 @@ export function HomePage() {
   const [showMoreDiscovered, setShowMoreDiscovered] = useState(false);
   const [showMorePopular, setShowMorePopular] = useState(false);
   const [showMoreArtists, setShowMoreArtists] = useState(false);
+  const [showMoreForYou, setShowMoreForYou] = useState(false);
   const [selectedArtist, setSelectedArtist] = useState<TopArtist | null>(null);
 
   const handleArtistSelect = (artist: TopArtist) => {
@@ -64,7 +65,7 @@ export function HomePage() {
     } catch (err) {
       console.error('Failed to load recommendations:', err);
       setRecStatus('empty');
-      setRecommendations({ recentlyPlayed: [], mostPlayed: [], topArtists: [] });
+      setRecommendations({ recentlyPlayed: [], mostPlayed: [], topArtists: [], forYou: [] });
     } finally {
       setLoading(false);
     }
@@ -244,7 +245,40 @@ export function HomePage() {
       {/* Recommendations */}
       {!loading && recommendations && (
         <div className="space-y-6 sm:space-y-8">
-          {/* Discovered Tracks - For You (from search history) */}
+          {/* ── For You ─ seed tracks + usage blend, always visible ── */}
+          {recommendations.forYou?.length > 0 && (
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+            >
+              <div className="mb-3 sm:mb-4 flex items-center gap-2">
+                <Sparkles size={18} className="text-purple-400" />
+                <div>
+                  <h3 className="text-base sm:text-lg font-semibold text-white">For You</h3>
+                  <p className="text-xs sm:text-sm text-gray-500 mt-0.5">
+                    Personalised picks based on your taste
+                  </p>
+                </div>
+              </div>
+              <RecommendationSection
+                title=""
+                description=""
+                tracks={showMoreForYou ? recommendations.forYou : recommendations.forYou.slice(0, 6)}
+                hideHeader
+              />
+              {recommendations.forYou.length > 6 && (
+                <button
+                  onClick={() => setShowMoreForYou(!showMoreForYou)}
+                  className="mt-3 flex items-center gap-2 mx-auto px-4 py-2 text-sm text-white/60 hover:text-white hover:bg-white/5 rounded-lg transition"
+                >
+                  <ChevronDown size={16} className={`transition-transform ${showMoreForYou ? 'rotate-180' : ''}`} />
+                  {showMoreForYou ? 'Show Less' : `Show ${recommendations.forYou.length - 6} More`}
+                </button>
+              )}
+            </motion.div>
+          )}
+
+          {/* Discovered Tracks - From search history */}
           {discoveredTracks.length > 0 && (
             <motion.div
               initial={{ opacity: 0, y: 20 }}

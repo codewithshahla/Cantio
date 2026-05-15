@@ -8,8 +8,9 @@ export interface TopArtist {
 
 export interface Recommendations {
   recentlyPlayed: Track[];
-  mostPlayed: Track[];
-  topArtists: TopArtist[];
+  mostPlayed:     Track[];
+  topArtists:     TopArtist[];
+  forYou:         Track[];
 }
 
 const API_URL = import.meta.env.VITE_API_URL ? `${import.meta.env.VITE_API_URL}/api` : 'http://localhost:4001/api';
@@ -48,8 +49,9 @@ export async function getGuestRecommendations(): Promise<Recommendations> {
   if (reverseQueue.length === 0) {
     return {
       recentlyPlayed: [],
-      mostPlayed: [],
-      topArtists: []
+      mostPlayed:     [],
+      topArtists:     [],
+      forYou:         [],
     };
   }
 
@@ -111,6 +113,7 @@ export async function getGuestRecommendations(): Promise<Recommendations> {
   return {
     recentlyPlayed,
     mostPlayed,
-    topArtists
+    topArtists,
+    forYou: [], // Guest mode has no server-side seed tracks
   };
 }

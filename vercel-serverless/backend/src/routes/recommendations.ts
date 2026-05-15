@@ -1,5 +1,4 @@
 import { FastifyInstance } from 'fastify';
-import { z } from 'zod';
 import { prisma } from '../lib/prisma.js';
 
 interface Track {
@@ -18,165 +17,189 @@ interface TopArtist {
 
 interface Recommendations {
   recentlyPlayed: Track[];
-  mostPlayed: Track[];
-  topArtists: TopArtist[];
+  mostPlayed:     Track[];
+  topArtists:     TopArtist[];
+  forYou:         Track[];   // Blended: onboarding seeds + usage-driven discoveries
 }
 
 export default async function recommendations(fastify: FastifyInstance) {
-  // Get personalized recommendations for logged-in users
+  /**
+   * GET /recommendations
+   *
+   * Signal priority (blended, not gated):
+   *   1. PlayHistory  → recentlyPlayed, topArtists
+   *   2. Recommendation table (scored) → mostPlayed
+   *   3. UserOnboardingPreferences.seedTracks → forYou (always present initially,
+   *      gradually replaced by usage-driven tracks as history deepens)
+   *
+   * The onboarding seed tracks are ALWAYS included in forYou until the user
+   * has enough real history (≥30 played tracks) to crowd them out naturally.
+   * This means new users see relevant content immediately, and returning users
+   * see increasingly personalised content over time.
+   */
   fastify.get('/', {
     onRequest: [fastify.authenticate]
   }, async (request, reply) => {
     const userId = (request.user as any).id;
 
-    // Get recently played (last 10 unique tracks)
+    // ─── 1. Recently played (last 10 unique tracks from PlayHistory) ──────────
     const recentPlays = await prisma.playHistory.findMany({
       where: { userId },
       orderBy: { playedAt: 'desc' },
-      take: 50, // Get more to filter duplicates
-      select: {
-        trackId: true,
-        title: true,
-        artist: true,
-        thumbnail: true,
-      }
+      take: 60,
+      select: { trackId: true, title: true, artist: true, thumbnail: true, duration: true }
     });
 
-    // Deduplicate by trackId
-    const recentlyPlayedRaw = Array.from(
+    const recentlyPlayed: Track[] = Array.from(
       new Map(recentPlays.map((p: any) => [p.trackId, {
-        videoId: p.trackId,
-        title: p.title,
-        artist: p.artist,
+        videoId:   p.trackId,
+        title:     p.title,
+        artist:    p.artist,
         thumbnail: p.thumbnail || '',
-        duration: 0 // Duration not stored in history
+        duration:  p.duration  || 0,
       }])).values()
-    ).slice(0, 10);
-    
-    const recentlyPlayed: Track[] = recentlyPlayedRaw as Track[];
+    ).slice(0, 10) as Track[];
 
-    // Get most played tracks (aggregate by trackId)
-    const playCountsRaw = await prisma.playHistory.groupBy({
-      by: ['trackId', 'title', 'artist', 'thumbnail'],
-      where: { userId },
-      _count: { trackId: true },
-      orderBy: { _count: { trackId: 'desc' } },
-      take: 10
+    // ─── 2. Most played — use the Recommendation scored aggregate ─────────────
+    // The Recommendation table is updated on every play (history.ts POST /history)
+    // with score += 0.5 and playCount++, giving us a decay-free preference model.
+    const scoredTracks = await prisma.recommendation.findMany({
+      where:   { userId },
+      orderBy: [{ score: 'desc' }, { playCount: 'desc' }],
+      take:    20,
+      select:  { trackId: true, title: true, artist: true, thumbnail: true, duration: true, playCount: true }
     });
 
-    const mostPlayed: Track[] = playCountsRaw.map((p: any) => ({
-      videoId: p.trackId,
-      title: p.title,
-      artist: p.artist,
-      thumbnail: p.thumbnail || '',
-      duration: 0
+    const mostPlayed: Track[] = scoredTracks.map((t: any) => ({
+      videoId:   t.trackId,
+      title:     t.title,
+      artist:    t.artist,
+      thumbnail: t.thumbnail || '',
+      duration:  t.duration  || 0,
     }));
 
-    // Get top artists (aggregate by artist, get play count)
+    // ─── 3. Top artists (from PlayHistory, grouped by artist) ─────────────────
     const topArtistsRaw = await prisma.playHistory.groupBy({
-      by: ['artist'],
-      where: { userId },
-      _count: { artist: true },
+      by:      ['artist'],
+      where:   { userId },
+      _count:  { artist: true },
       orderBy: { _count: { artist: 'desc' } },
-      take: 5
+      take:    5,
     });
 
-    // Batch fetch all tracks for top artists in ONE query (avoid N+1)
     const topArtistNames = topArtistsRaw.map((a: any) => a.artist);
-    const allArtistTracks = topArtistNames.length > 0 
+    const artistTracks = topArtistNames.length > 0
       ? await prisma.playHistory.findMany({
-          where: {
-            userId,
-            artist: { in: topArtistNames }
-          },
+          where:   { userId, artist: { in: topArtistNames } },
           orderBy: { playedAt: 'desc' },
-          select: {
-            trackId: true,
-            title: true,
-            artist: true,
-            thumbnail: true,
-          }
+          select:  { trackId: true, title: true, artist: true, thumbnail: true, duration: true }
         })
       : [];
 
-    // Group tracks by artist
     const tracksByArtist = new Map<string, Track[]>();
-    for (const t of allArtistTracks) {
-      const track: Track = {
-        videoId: t.trackId,
-        title: t.title,
-        artist: t.artist,
-        thumbnail: t.thumbnail || '',
-        duration: 0
-      };
-      
-      if (!tracksByArtist.has(t.artist)) {
-        tracksByArtist.set(t.artist, []);
-      }
-      
-      // Deduplicate by trackId within artist
-      const artistTracks = tracksByArtist.get(t.artist)!;
-      if (!artistTracks.some(at => at.videoId === track.videoId)) {
-        if (artistTracks.length < 8) {
-          artistTracks.push(track);
-        }
+    for (const t of artistTracks) {
+      if (!tracksByArtist.has(t.artist)) tracksByArtist.set(t.artist, []);
+      const list = tracksByArtist.get(t.artist)!;
+      if (list.length < 8 && !list.some(x => x.videoId === t.trackId)) {
+        list.push({ videoId: t.trackId, title: t.title, artist: t.artist, thumbnail: t.thumbnail || '', duration: t.duration || 0 });
       }
     }
 
-    // Build top artists array
-    const topArtists: TopArtist[] = topArtistsRaw.map((artistGroup: any) => ({
-      name: artistGroup.artist,
-      playCount: artistGroup._count.artist,
-      tracks: tracksByArtist.get(artistGroup.artist) || []
+    const topArtists: TopArtist[] = topArtistsRaw.map((a: any) => ({
+      name:      a.artist,
+      playCount: a._count.artist,
+      tracks:    tracksByArtist.get(a.artist) || [],
     }));
 
-    const hasHistory = recentlyPlayed.length > 0 || mostPlayed.length > 0 || topArtists.length > 0;
+    // ─── 4. For You — ALWAYS blend onboarding seeds with usage ───────────────
+    // Strategy:
+    //   • Always fetch onboarding seed tracks (initial cold-start signal).
+    //   • If user has enough history (≥30 plays), weight usage-driven tracks
+    //     higher and seeds lower, eventually phasing seeds out after ≥100 plays.
+    //   • If minimal history, seeds are shown prominently.
+    //
+    // This ensures new users see relevant content immediately and returning users
+    // see increasingly personalised "For You" without ever showing a blank state.
 
-    if (!hasHistory) {
-      const preferences = await prisma.userOnboardingPreferences.findUnique({
-        where: { userId }
-      });
+    const totalPlayCount = await prisma.playHistory.count({ where: { userId } });
 
-      const seedTracksRaw = Array.isArray(preferences?.seedTracks)
-        ? preferences?.seedTracks
-        : [];
+    // Fetch onboarding seed tracks
+    const onboarding = await prisma.userOnboardingPreferences.findUnique({
+      where:  { userId },
+      select: { seedTracks: true }
+    });
 
-      const seedTracks: Track[] = seedTracksRaw
-        .map((track: any) => ({
-          videoId: track.videoId,
-          title: track.title,
-          artist: track.artist,
-          thumbnail: track.thumbnail || '',
-          duration: track.duration || 0
-        }))
-        .filter((track: Track) => Boolean(track.videoId && track.title && track.artist));
+    const seedTracksRaw = Array.isArray(onboarding?.seedTracks) ? onboarding!.seedTracks : [];
+    const seedTracks: Track[] = (seedTracksRaw as any[])
+      .map(t => ({
+        videoId:   t.videoId   || '',
+        title:     t.title     || '',
+        artist:    t.artist    || '',
+        thumbnail: t.thumbnail || '',
+        duration:  t.duration  || 0,
+      }))
+      .filter(t => t.videoId && t.title && t.artist);
 
-      const artistsMap = new Map<string, Track[]>();
-      for (const track of seedTracks) {
-        if (!artistsMap.has(track.artist)) {
-          artistsMap.set(track.artist, []);
-        }
-        const list = artistsMap.get(track.artist)!;
-        if (!list.some(t => t.videoId === track.videoId)) {
-          list.push(track);
-        }
-      }
-
-      const seededTopArtists: TopArtist[] = Array.from(artistsMap.entries()).map(([name, tracks]) => ({
-        name,
-        playCount: tracks.length,
-        tracks: tracks.slice(0, 8)
+    // Build usage-driven "For You" candidates:
+    // top-scored tracks from Recommendation table that haven't been played recently
+    const recentIds = new Set(recentlyPlayed.map(t => t.videoId));
+    const usageDriven: Track[] = scoredTracks
+      .filter((t: any) => !recentIds.has(t.trackId))
+      .map((t: any) => ({
+        videoId:   t.trackId,
+        title:     t.title,
+        artist:    t.artist,
+        thumbnail: t.thumbnail || '',
+        duration:  t.duration  || 0,
       }));
 
-      return {
-        recommendations: {
-          recentlyPlayed: [],
-          mostPlayed: seedTracks.slice(0, 10),
-          topArtists: seededTopArtists.slice(0, 5)
-        }
-      };
+    // Blend ratio: as usage grows, seeds phase out
+    //   0–30 plays:   100% seeds, 0% usage-driven
+    //   30–100 plays: seeds fade, usage-driven grows
+    //   100+ plays:   ~0% seeds, 100% usage-driven (seeds only if usage < 10 tracks)
+    const SEED_PHASE_OUT_START = 30;
+    const SEED_PHASE_OUT_END   = 100;
+    const FORYOU_LIMIT         = 20;
+
+    let forYou: Track[];
+    const allForYouIds = new Set<string>();
+
+    if (totalPlayCount >= SEED_PHASE_OUT_END && usageDriven.length >= 10) {
+      // Veteran user — usage-driven only
+      forYou = usageDriven.slice(0, FORYOU_LIMIT);
+    } else if (totalPlayCount >= SEED_PHASE_OUT_START && usageDriven.length > 0) {
+      // Growing user — interleave seeds and usage-driven
+      const usageWeight = Math.min(1, (totalPlayCount - SEED_PHASE_OUT_START) / (SEED_PHASE_OUT_END - SEED_PHASE_OUT_START));
+      const usageSlots  = Math.round(FORYOU_LIMIT * usageWeight);
+      const seedSlots   = FORYOU_LIMIT - usageSlots;
+
+      forYou = [];
+      for (const t of usageDriven.slice(0, usageSlots)) {
+        if (!allForYouIds.has(t.videoId)) { allForYouIds.add(t.videoId); forYou.push(t); }
+      }
+      for (const t of seedTracks.slice(0, seedSlots)) {
+        if (!allForYouIds.has(t.videoId)) { allForYouIds.add(t.videoId); forYou.push(t); }
+      }
+    } else {
+      // New user — seeds dominate, sprinkle usage-driven if available
+      forYou = [];
+      for (const t of seedTracks) {
+        if (!allForYouIds.has(t.videoId)) { allForYouIds.add(t.videoId); forYou.push(t); }
+        if (forYou.length >= FORYOU_LIMIT) break;
+      }
+      for (const t of usageDriven) {
+        if (!allForYouIds.has(t.videoId)) { allForYouIds.add(t.videoId); forYou.push(t); }
+        if (forYou.length >= FORYOU_LIMIT) break;
+      }
     }
 
-    return { recommendations: { recentlyPlayed, mostPlayed, topArtists } };
+    return {
+      recommendations: {
+        recentlyPlayed,
+        mostPlayed,
+        topArtists,
+        forYou,
+      } satisfies Recommendations
+    };
   });
 }
