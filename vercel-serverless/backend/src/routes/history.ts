@@ -47,33 +47,70 @@ export default async function historyRoutes(fastify: FastifyInstance) {
       const userId = (request.user as any).id;
 
       // Update or create recommendation entry (this is the main aggregate)
-      await prisma.recommendation.upsert({
-        where: {
-          userId_trackId: {
+      //
+      // Score policy:
+      //   • First play: score = 1.0 (base signal)
+      //   • Replayed <6h:  +0.2 (diminishing returns — autoplay / background loops)
+      //   • Replayed 6–24h: +0.4 (moderate intent)
+      //   • Replayed >24h: +0.5 (full intent — deliberate revisit)
+      //   • Hard cap at 20 so no track accumulates unbounded weight
+      //
+      // The effective score used for recommendations is further decayed by
+      // recencyFactor and boosted by isLiked at query time (recommendations.ts).
+      // That means stale rows auto-correct on every recommendation refresh.
+      //
+      // NORMALIZATION GUARD: skip recommendation upsert for tracks with
+      // unknown/fallback artist so malformed metadata never corrupts affinity
+      // scoring, topArtists, or the forYou diversity pools.
+      const isUnknownArtist = !body.artist
+        || body.artist.trim().toLowerCase() === 'unknown'
+        || body.artist.trim().toLowerCase() === 'unknown artist';
+
+      if (!isUnknownArtist) {
+        const existing = await prisma.recommendation.findUnique({
+          where: { userId_trackId: { userId, trackId: body.trackId } },
+          select: { lastPlayedAt: true, score: true },
+        });
+
+        const hoursSinceLast = existing?.lastPlayedAt
+          ? (Date.now() - existing.lastPlayedAt.getTime()) / 3_600_000
+          : Infinity;
+
+        const scoreIncrement =
+          hoursSinceLast < 6  ? 0.2 :   // same-session replay
+          hoursSinceLast < 24 ? 0.4 :   // same-day revisit
+                                0.5;     // deliberate return
+
+        const newScore = Math.min((existing?.score ?? 0) + scoreIncrement, 20);
+
+        await prisma.recommendation.upsert({
+          where: {
+            userId_trackId: { userId, trackId: body.trackId }
+          },
+          update: {
+            score:        newScore,
+            playCount:    { increment: 1 },
+            lastPlayedAt: new Date(),
+            source:       'play',
+            updatedAt:    new Date(),
+          },
+          create: {
             userId,
-            trackId: body.trackId
-          }
-        },
-        update: {
-          score: { increment: 0.5 }, // Each play adds +0.5 score
-          playCount: { increment: 1 }, // Track play count
-          lastPlayedAt: new Date(),
-          source: 'play',
-          updatedAt: new Date()
-        },
-        create: {
-          userId,
-          trackId: body.trackId,
-          title: body.title,
-          artist: body.artist,
-          thumbnail: body.thumbnail,
-          duration: body.duration,
-          source: 'play',
-          score: 1.0,
-          playCount: 1,
-          lastPlayedAt: new Date()
-        }
-      });
+            trackId:      body.trackId,
+            title:        body.title,
+            artist:       body.artist,
+            thumbnail:    body.thumbnail,
+            duration:     body.duration,
+            source:       'play',
+            score:        1.0,
+            playCount:    1,
+            lastPlayedAt: new Date(),
+          },
+        });
+      } else {
+        fastify.log.warn({ trackId: body.trackId, title: body.title },
+          '[history] Skipping recommendation upsert: unknown artist');
+      }
 
       // Create play history entry (keep limited history)
       const play = await prisma.playHistory.create({

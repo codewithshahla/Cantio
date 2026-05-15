@@ -19,35 +19,134 @@ interface Recommendations {
   recentlyPlayed: Track[];
   mostPlayed:     Track[];
   topArtists:     TopArtist[];
-  forYou:         Track[];   // Blended: onboarding seeds + usage-driven discoveries
+  forYou:         Track[];
+}
+
+// ─── Scoring ────────────────────────────────────────────────────────────────
+
+/**
+ * Compute a time-decayed, like-boosted effective score from raw stored signals.
+ * Never stored — computed at query time so stale rows auto-correct every refresh.
+ *
+ *   effectiveScore = cappedRawScore × recencyFactor × likeMultiplier
+ *
+ *   recencyFactor:  exp(-daysSincePlay / 45)  → full weight today, ~½ after 30d
+ *   likeMultiplier: 1.5 if explicitly liked
+ *   cappedRawScore: capped at 20 to prevent unbounded accumulation
+ */
+function effectiveScore(rec: {
+  score:        number;
+  isLiked:      boolean;
+  lastPlayedAt: Date | null;
+}): number {
+  const daysSince = rec.lastPlayedAt
+    ? (Date.now() - rec.lastPlayedAt.getTime()) / 86_400_000
+    : 365;
+
+  const recencyFactor   = Math.exp(-daysSince / 45);          // half-life ~31d
+  const likeMultiplier  = rec.isLiked ? 1.5 : 1.0;
+  const cappedScore     = Math.min(rec.score, 20);
+
+  return cappedScore * recencyFactor * likeMultiplier;
+}
+
+// ─── Diversity helpers ───────────────────────────────────────────────────────
+
+/** Add tracks to target without exceeding perArtistCap or total limit. */
+function fill(
+  target:        Track[],
+  seen:          Set<string>,
+  artistCount:   Map<string, number>,
+  candidates:    Track[],
+  slots:         number,
+  perArtistCap:  number,
+): void {
+  for (const t of candidates) {
+    if (target.length >= seen.size + slots) break; // slots filled
+    if (seen.has(t.videoId)) continue;
+    const ac = artistCount.get(t.artist) ?? 0;
+    if (ac >= perArtistCap) continue;
+    seen.add(t.videoId);
+    artistCount.set(t.artist, ac + 1);
+    target.push(t);
+  }
 }
 
 export default async function recommendations(fastify: FastifyInstance) {
   /**
    * GET /recommendations
    *
-   * Signal priority (blended, not gated):
-   *   1. PlayHistory  → recentlyPlayed, topArtists
-   *   2. Recommendation table (scored) → mostPlayed
-   *   3. UserOnboardingPreferences.seedTracks → forYou (always present initially,
-   *      gradually replaced by usage-driven tracks as history deepens)
+   * Diversity-first recommendation engine.
    *
-   * The onboarding seed tracks are ALWAYS included in forYou until the user
-   * has enough real history (≥30 played tracks) to crowd them out naturally.
-   * This means new users see relevant content immediately, and returning users
-   * see increasingly personalised content over time.
+   * Signal sources (all from existing DB columns — no new tables):
+   *   • Recommendation.score         → raw accumulated play weight
+   *   • Recommendation.lastPlayedAt  → recency decay
+   *   • Recommendation.isLiked       → explicit preference boost
+   *   • Recommendation.playCount     → for artist tier classification
+   *   • PlayHistory                  → recentlyPlayed + topArtists
+   *   • UserOnboardingPreferences    → cold-start seeds (always mixed in)
+   *
+   * forYou diversity budget (20 tracks, max 3 per artist):
+   *   40% (8)  → primary artists  (≥4 plays — user's established taste)
+   *   30% (6)  → secondary artists (1–3 plays — emerging preferences)
+   *   20% (4)  → onboarding seeds (fresh / serendipitous content)
+   *   10% (2)  → exploration      (cold tracks: >14d since last play)
+   *
+   * Anti-feedback-loop guarantees:
+   *   • Max 3 tracks per artist in forYou
+   *   • Secondary artists always get slots even if primary dominates
+   *   • Seeds always present until overridden by diversity budget
+   *   • Exploration ensures low-played tracks resurface
    */
   fastify.get('/', {
     onRequest: [fastify.authenticate]
   }, async (request, reply) => {
     const userId = (request.user as any).id;
 
-    // ─── 1. Recently played (last 10 unique tracks from PlayHistory) ──────────
+    // ─── 1. Fetch all recommendation signals in ONE query ────────────────────
+    // Exclude Unknown/Unknown Artist — these are pre-normalization malformed rows
+    // that should not contribute to affinity scoring or diversity pools.
+    const allRecs = await prisma.recommendation.findMany({
+      where:  {
+        userId,
+        NOT: { artist: { in: ['Unknown', 'Unknown Artist', ''] } }
+      },
+      select: {
+        trackId:      true,
+        title:        true,
+        artist:       true,
+        thumbnail:    true,
+        duration:     true,
+        score:        true,
+        playCount:    true,
+        lastPlayedAt: true,
+        isLiked:      true,
+      },
+    });
+
+    // Compute effective score for each track (recency + like weighted)
+    type RecRow = (typeof allRecs)[number] & { effScore: number };
+    const scored: RecRow[] = allRecs
+      .map((r: (typeof allRecs)[number]): RecRow => ({ ...r, effScore: effectiveScore(r) }))
+      .sort((a: RecRow, b: RecRow) => b.effScore - a.effScore);
+
+    const toTrack = (r: typeof scored[number]): Track => ({
+      videoId:   r.trackId,
+      title:     r.title,
+      artist:    r.artist,
+      thumbnail: r.thumbnail || '',
+      duration:  r.duration  || 0,
+    });
+
+    // ─── 2. Recently played (from PlayHistory — chronological, not scored) ───
     const recentPlays = await prisma.playHistory.findMany({
-      where: { userId },
+      where:   {
+        userId,
+        NOT: { artist: { in: ['Unknown', 'Unknown Artist', ''] } }
+      },
       orderBy: { playedAt: 'desc' },
-      take: 60,
-      select: { trackId: true, title: true, artist: true, thumbnail: true, duration: true }
+      take:    60,
+      select:  { trackId: true, title: true, artist: true, thumbnail: true, duration: true },
     });
 
     const recentlyPlayed: Track[] = Array.from(
@@ -60,28 +159,23 @@ export default async function recommendations(fastify: FastifyInstance) {
       }])).values()
     ).slice(0, 10) as Track[];
 
-    // ─── 2. Most played — use the Recommendation scored aggregate ─────────────
-    // The Recommendation table is updated on every play (history.ts POST /history)
-    // with score += 0.5 and playCount++, giving us a decay-free preference model.
-    const scoredTracks = await prisma.recommendation.findMany({
-      where:   { userId },
-      orderBy: [{ score: 'desc' }, { playCount: 'desc' }],
-      take:    20,
-      select:  { trackId: true, title: true, artist: true, thumbnail: true, duration: true, playCount: true }
-    });
+    // ─── 3. Most played — effective score, NOT raw playCount ─────────────────
+    // Capped at 10, using our decay-adjusted effectiveScore so:
+    //   • Autoplay loops don't dominate (recency decay normalises them)
+    //   • Liked tracks surface higher (likeMultiplier)
+    const mostPlayed: Track[] = scored.slice(0, 10).map(toTrack);
 
-    const mostPlayed: Track[] = scoredTracks.map((t: any) => ({
-      videoId:   t.trackId,
-      title:     t.title,
-      artist:    t.artist,
-      thumbnail: t.thumbnail || '',
-      duration:  t.duration  || 0,
-    }));
-
-    // ─── 3. Top artists (from PlayHistory, grouped by artist) ─────────────────
+    // ─── 4. Top artists (from PlayHistory, grouped by raw count) ─────────────
+    // Exclude "Unknown" / "Unknown Artist" from groupBy — these are malformed
+    // tracks from before normalization was applied and must not pollute affinity.
     const topArtistsRaw = await prisma.playHistory.groupBy({
       by:      ['artist'],
-      where:   { userId },
+      where:   {
+        userId,
+        NOT: {
+          artist: { in: ['Unknown', 'Unknown Artist', ''] }
+        }
+      },
       _count:  { artist: true },
       orderBy: { _count: { artist: 'desc' } },
       take:    5,
@@ -92,7 +186,7 @@ export default async function recommendations(fastify: FastifyInstance) {
       ? await prisma.playHistory.findMany({
           where:   { userId, artist: { in: topArtistNames } },
           orderBy: { playedAt: 'desc' },
-          select:  { trackId: true, title: true, artist: true, thumbnail: true, duration: true }
+          select:  { trackId: true, title: true, artist: true, thumbnail: true, duration: true },
         })
       : [];
 
@@ -111,26 +205,54 @@ export default async function recommendations(fastify: FastifyInstance) {
       tracks:    tracksByArtist.get(a.artist) || [],
     }));
 
-    // ─── 4. For You — ALWAYS blend onboarding seeds with usage ───────────────
-    // Strategy:
-    //   • Always fetch onboarding seed tracks (initial cold-start signal).
-    //   • If user has enough history (≥30 plays), weight usage-driven tracks
-    //     higher and seeds lower, eventually phasing seeds out after ≥100 plays.
-    //   • If minimal history, seeds are shown prominently.
-    //
-    // This ensures new users see relevant content immediately and returning users
-    // see increasingly personalised "For You" without ever showing a blank state.
+    // ─── 5. Diversity-protected forYou ───────────────────────────────────────
+    const now = Date.now();
 
-    const totalPlayCount = await prisma.playHistory.count({ where: { userId } });
+    // Tier artists by play depth:
+    //   primary   → ≥4 plays (established taste)
+    //   secondary → 1–3 plays (emerging, avoid lock-in)
+    const artistPlayCount = new Map<string, number>();
+    for (const r of allRecs) {
+      artistPlayCount.set(r.artist, (artistPlayCount.get(r.artist) ?? 0) + r.playCount);
+    }
 
-    // Fetch onboarding seed tracks
+    const primaryArtists   = new Set<string>();
+    const secondaryArtists = new Set<string>();
+    for (const [artist, count] of artistPlayCount) {
+      if (count >= 4) primaryArtists.add(artist);
+      else            secondaryArtists.add(artist);
+    }
+
+    // Classify scored tracks into pools
+    const primaryPool:   Track[] = [];
+    const secondaryPool: Track[] = [];
+    const explorePool:   Track[] = []; // Not played in 14+ days → fresh resurfacing
+
+    const recentlyPlayedIds = new Set(recentlyPlayed.map(t => t.videoId));
+
+    for (const r of scored) {
+      if (recentlyPlayedIds.has(r.trackId)) continue; // skip just-played tracks
+      const daysSince = r.lastPlayedAt
+        ? (now - r.lastPlayedAt.getTime()) / 86_400_000
+        : 365;
+
+      const track = toTrack(r);
+      if (daysSince >= 14) {
+        explorePool.push(track);       // Stale → exploration candidate
+      } else if (primaryArtists.has(r.artist)) {
+        primaryPool.push(track);
+      } else if (secondaryArtists.has(r.artist)) {
+        secondaryPool.push(track);
+      }
+    }
+
+    // Seed tracks (onboarding cold-start)
     const onboarding = await prisma.userOnboardingPreferences.findUnique({
       where:  { userId },
-      select: { seedTracks: true }
+      select: { seedTracks: true },
     });
-
-    const seedTracksRaw = Array.isArray(onboarding?.seedTracks) ? onboarding!.seedTracks : [];
-    const seedTracks: Track[] = (seedTracksRaw as any[])
+    const seedTracks: Track[] = ((Array.isArray(onboarding?.seedTracks)
+      ? onboarding!.seedTracks : []) as any[])
       .map(t => ({
         videoId:   t.videoId   || '',
         title:     t.title     || '',
@@ -140,57 +262,48 @@ export default async function recommendations(fastify: FastifyInstance) {
       }))
       .filter(t => t.videoId && t.title && t.artist);
 
-    // Build usage-driven "For You" candidates:
-    // top-scored tracks from Recommendation table that haven't been played recently
-    const recentIds = new Set(recentlyPlayed.map(t => t.videoId));
-    const usageDriven: Track[] = scoredTracks
-      .filter((t: any) => !recentIds.has(t.trackId))
-      .map((t: any) => ({
-        videoId:   t.trackId,
-        title:     t.title,
-        artist:    t.artist,
-        thumbnail: t.thumbnail || '',
-        duration:  t.duration  || 0,
-      }));
+    // Diversity budget: 20 tracks, strict max 3 per artist
+    // Slots: 40% primary | 30% secondary | 20% seeds | 10% explore
+    const LIMIT         = 20;
+    const MAX_PER_ARTIST = 3;
+    const SLOTS = {
+      primary:   8,   // 40%
+      secondary: 6,   // 30%
+      seeds:     4,   // 20%
+      explore:   2,   // 10%
+    } as const;
 
-    // Blend ratio: as usage grows, seeds phase out
-    //   0–30 plays:   100% seeds, 0% usage-driven
-    //   30–100 plays: seeds fade, usage-driven grows
-    //   100+ plays:   ~0% seeds, 100% usage-driven (seeds only if usage < 10 tracks)
-    const SEED_PHASE_OUT_START = 30;
-    const SEED_PHASE_OUT_END   = 100;
-    const FORYOU_LIMIT         = 20;
+    const forYou:      Track[] = [];
+    const forYouSeen = new Set<string>();
+    const artistTally = new Map<string, number>();
 
-    let forYou: Track[];
-    const allForYouIds = new Set<string>();
+    // Helper: push into forYou respecting seen + per-artist cap
+    const pushSlots = (pool: Track[], slots: number) => {
+      let added = 0;
+      for (const t of pool) {
+        if (added >= slots || forYou.length >= LIMIT) break;
+        if (forYouSeen.has(t.videoId)) continue;
+        const ac = artistTally.get(t.artist) ?? 0;
+        if (ac >= MAX_PER_ARTIST) continue;
+        forYouSeen.add(t.videoId);
+        artistTally.set(t.artist, ac + 1);
+        forYou.push(t);
+        added++;
+      }
+    };
 
-    if (totalPlayCount >= SEED_PHASE_OUT_END && usageDriven.length >= 10) {
-      // Veteran user — usage-driven only
-      forYou = usageDriven.slice(0, FORYOU_LIMIT);
-    } else if (totalPlayCount >= SEED_PHASE_OUT_START && usageDriven.length > 0) {
-      // Growing user — interleave seeds and usage-driven
-      const usageWeight = Math.min(1, (totalPlayCount - SEED_PHASE_OUT_START) / (SEED_PHASE_OUT_END - SEED_PHASE_OUT_START));
-      const usageSlots  = Math.round(FORYOU_LIMIT * usageWeight);
-      const seedSlots   = FORYOU_LIMIT - usageSlots;
+    pushSlots(primaryPool,   SLOTS.primary);
+    pushSlots(secondaryPool, SLOTS.secondary);
+    pushSlots(seedTracks,    SLOTS.seeds);
+    pushSlots(explorePool,   SLOTS.explore);
 
-      forYou = [];
-      for (const t of usageDriven.slice(0, usageSlots)) {
-        if (!allForYouIds.has(t.videoId)) { allForYouIds.add(t.videoId); forYou.push(t); }
-      }
-      for (const t of seedTracks.slice(0, seedSlots)) {
-        if (!allForYouIds.has(t.videoId)) { allForYouIds.add(t.videoId); forYou.push(t); }
-      }
-    } else {
-      // New user — seeds dominate, sprinkle usage-driven if available
-      forYou = [];
-      for (const t of seedTracks) {
-        if (!allForYouIds.has(t.videoId)) { allForYouIds.add(t.videoId); forYou.push(t); }
-        if (forYou.length >= FORYOU_LIMIT) break;
-      }
-      for (const t of usageDriven) {
-        if (!allForYouIds.has(t.videoId)) { allForYouIds.add(t.videoId); forYou.push(t); }
-        if (forYou.length >= FORYOU_LIMIT) break;
-      }
+    // Backfill any remaining slots with best available (in priority order)
+    // so forYou never has gaps when one pool is empty (new users, etc.)
+    if (forYou.length < LIMIT) {
+      pushSlots(seedTracks,    LIMIT);  // seeds are freshest for new users
+      pushSlots(primaryPool,   LIMIT);
+      pushSlots(secondaryPool, LIMIT);
+      pushSlots(explorePool,   LIMIT);
     }
 
     return {
@@ -199,7 +312,7 @@ export default async function recommendations(fastify: FastifyInstance) {
         mostPlayed,
         topArtists,
         forYou,
-      } satisfies Recommendations
+      } satisfies Recommendations,
     };
   });
 }

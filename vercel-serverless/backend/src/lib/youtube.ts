@@ -54,6 +54,164 @@ export interface MusicArtistResult {
 export type MusicSearchType = 'playlists' | 'albums' | 'artists';
 export type MusicSearchResult = MusicPlaylistResult | MusicAlbumResult | MusicArtistResult;
 
+// ─── Shared utilities ────────────────────────────────────────────────────────
+
+/** Safely extract a plain string from a youtubei.js Text / string value */
+function getText(t: any): string {
+  if (!t) return '';
+  if (typeof t === 'string') return t;
+  if (t.text && typeof t.text === 'string') return t.text;
+  if (Array.isArray(t.runs)) return t.runs.map((r: any) => r?.text || '').join('');
+  const s = String(t);
+  return s === '[object Object]' ? '' : s;
+}
+
+function getThumbnailUrl(thumbnails: any): string {
+  if (!thumbnails) return '';
+  if (Array.isArray(thumbnails)) {
+    return thumbnails[thumbnails.length - 1]?.url || thumbnails[0]?.url || '';
+  }
+  if (thumbnails.url) return thumbnails.url;
+  return '';
+}
+
+function normalizeTitleKey(title?: string): string {
+  const base = title?.toLowerCase() || '';
+  return base
+    .replace(/\([^)]*\)|\[[^\]]*\]|\{[^}]*\}/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// ─── Centralized artist extraction ───────────────────────────────────────────
+
+/**
+ * extractArtistFromItem()
+ *
+ * Attempts to pull an artist name from any Innertube item shape.
+ * Covers both regular YouTube (WEB) and YouTube Music (WEB_REMIX) item formats.
+ *
+ * Priority order (matches spec):
+ *   1. item.artists[] — YTM MusicResponsiveListItem
+ *   2. item.byline    — YTM watchNext items
+ *   3. item.author    — regular YT items (may be Text node or {name})
+ *   4. item.uploader  — alternate YT field
+ *   5. item.channel   — alternate YT field
+ *   6. item.subtitle  — YTM secondary info row
+ *   7. item.ownerText — legacy YT data
+ *   8. '' (caller decides on fallback)
+ */
+function extractArtistFromItem(item: any): string {
+  if (!item) return '';
+
+  // 1. YTM artists[] array (MusicResponsiveListItem from WEB_REMIX)
+  if (Array.isArray(item.artists) && item.artists.length > 0) {
+    const name = item.artists[0]?.name || getText(item.artists[0]);
+    if (name) return name;
+  }
+
+  // 2. byline — YTM watchNext sidebar items
+  const byline = getText(item.byline);
+  if (byline) return byline;
+
+  // 3. author — regular YT items (can be a Text object OR {name: string})
+  if (item.author) {
+    const authorName = item.author?.name || getText(item.author);
+    if (authorName) return authorName;
+  }
+
+  // 4. uploader — alternate YT field name
+  if (item.uploader) {
+    const uploaderName = item.uploader?.name || getText(item.uploader);
+    if (uploaderName) return uploaderName;
+  }
+
+  // 5. channel — another alternate YT field
+  if (item.channel) {
+    const channelName = item.channel?.name || getText(item.channel);
+    if (channelName) return channelName;
+  }
+
+  // 6. subtitle — YTM items often carry "Artist • Album • Year" here
+  const subtitle = getText(item.subtitle);
+  if (subtitle) {
+    // Take only the part before the first separator bullet
+    const firstPart = subtitle.split('•')[0].split('·')[0].trim();
+    if (firstPart) return firstPart;
+  }
+
+  // 7. ownerText — legacy YouTube data format
+  const ownerText = getText(item.ownerText);
+  if (ownerText) return ownerText;
+
+  return '';
+}
+
+// ─── Centralized normalizeTrack() ────────────────────────────────────────────
+
+/**
+ * normalizeTrack()
+ *
+ * THE single entry-point for all track objects entering:
+ *   queue / history / likes / recommendations / playlists
+ *
+ * Guarantees the output shape:
+ *   { videoId, title, artist, thumbnail, duration }
+ *
+ * @param item        Raw Innertube item (any format)
+ * @param fallbacks   Optional precomputed values (e.g. album-level artist)
+ *
+ * Returns null if the track cannot be meaningfully identified (no videoId or title).
+ */
+export function normalizeTrack(
+  item: any,
+  fallbacks?: { artist?: string; thumbnail?: string }
+): VideoResult | null {
+  if (!item) return null;
+
+  const videoId: string = item.id || item.video_id || item.videoId || '';
+  if (!videoId) return null;
+
+  const title = getText(item.title);
+  if (!title) return null;
+
+  // Artist: try item-level extraction first, then caller-provided fallback
+  let artist = extractArtistFromItem(item);
+  if (!artist && fallbacks?.artist) artist = fallbacks.artist;
+  if (!artist) artist = 'Unknown Artist';
+
+  // Thumbnail
+  const thumbnail =
+    getThumbnailUrl(item.thumbnail?.contents || item.thumbnail) ||
+    fallbacks?.thumbnail ||
+    `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+
+  const duration: number = item.duration?.seconds || item.length_seconds || 0;
+
+  return { videoId, title, artist, duration, thumbnail };
+}
+
+// ─── Shared dedup helpers ─────────────────────────────────────────────────────
+
+function extractItemsFromSource(source: any): any[] {
+  if (!source) return [];
+  const buckets: any[] = [];
+  if (Array.isArray(source)) buckets.push(source);
+  if (Array.isArray(source.items)) buckets.push(source.items);
+  if (Array.isArray(source.contents)) buckets.push(source.contents);
+  if (Array.isArray(source.playlist?.items)) buckets.push(source.playlist.items);
+  if (Array.isArray(source.playlist?.contents)) buckets.push(source.playlist.contents);
+  if (Array.isArray(source.tabs)) {
+    buckets.push(source.tabs.flatMap((tab: any) => tab?.content?.contents || tab?.contents || []));
+  }
+  if (Array.isArray(source.sections)) {
+    buckets.push(source.sections.flatMap((section: any) => section?.contents || []));
+  }
+  return buckets.flat();
+}
+
+// ─── Public API ───────────────────────────────────────────────────────────────
+
 export async function search(query: string, limit: number = 10): Promise<VideoResult[]> {
   const yt = await getYouTube();
   
@@ -62,56 +220,39 @@ export async function search(query: string, limit: number = 10): Promise<VideoRe
   
   // Blacklist keywords to filter out non-song content
   const blacklist = [
-    'interview',
-    'podcast',
-    'reaction',
-    'review',
-    'analysis',
-    'trailer',
-    'teaser',
-    'explanation',
-    'news',
-    "case",
-    "arrest",
-    "arrested",
-    "mla",
-    "court",
-    "crime",
-    "police",
-    "exclusive",
-    "reporter",
-    "debate",
-    "breaking",
-    "politics",
-    "geopolitics",
-    "documentary",
-    "vlog",
-    "comedy",
-    "sketch",
-    "prank",
-    "challenge",
-    "gaming",
-    "walkthrough",
-    "speedrun",
-    "mod showcase",
-    "gameplay",
-    "stream highlights" ,
-    "tv"    
+    'interview', 'podcast', 'reaction', 'review', 'analysis',
+    'trailer', 'teaser', 'explanation', 'news', 'case',
+    'arrest', 'arrested', 'mla', 'court', 'crime', 'police',
+    'exclusive', 'reporter', 'debate', 'breaking', 'politics',
+    'geopolitics', 'documentary', 'vlog', 'comedy', 'sketch',
+    'prank', 'challenge', 'gaming', 'walkthrough', 'speedrun',
+    'mod showcase', 'gameplay', 'stream highlights', 'tv'
   ];
   
   // Filter duration: 1 min (60s) to 10 min (600s)
-  const MIN_DURATION = 60;   // 1 minute
-  const MAX_DURATION = 600;  // 10 minutes
+  const MIN_DURATION = 60;
+  const MAX_DURATION = 600;
   
-  const mapped: VideoResult[] = results.videos
+  const mapped: VideoResult[] = (results.videos as any[])
     .filter((video: any) => video && video.id && video.title)
-    .map((video: any): VideoResult => ({
-      videoId: video.id,
-      title: video.title?.text || video.title || 'Unknown Title',
-      artist: video.author?.name || 'Unknown',
-      duration: video.duration?.seconds || 0,
-      thumbnail: video.best_thumbnail?.url || ''
-    }));
+    .map((video: any): VideoResult => {
+      // Use normalizeTrack for consistent extraction
+      const normalized = normalizeTrack({
+        id: video.id,
+        title: video.title,
+        // Regular YT search results have author on the video object directly
+        author: video.author,
+        thumbnail: video.best_thumbnail || video.thumbnail,
+        duration: video.duration,
+      });
+      return normalized ?? {
+        videoId: video.id,
+        title: getText(video.title) || 'Unknown Title',
+        artist: 'Unknown Artist',
+        duration: video.duration?.seconds || 0,
+        thumbnail: video.best_thumbnail?.url || '',
+      };
+    });
 
   const videos = mapped
     .filter((video) => video.duration >= MIN_DURATION && video.duration <= MAX_DURATION)
@@ -119,7 +260,7 @@ export async function search(query: string, limit: number = 10): Promise<VideoRe
       // Remove videos with blacklist keywords in title or channel name
       const titleLower = video.title.toLowerCase();
       const artistLower = video.artist.toLowerCase();
-      return !blacklist.some(keyword => 
+      return !blacklist.some(keyword =>
         titleLower.includes(keyword) || artistLower.includes(keyword)
       );
     });
@@ -129,9 +270,7 @@ export async function search(query: string, limit: number = 10): Promise<VideoRe
   const otherVideos = videos.filter(video => !video.artist.includes('- Topic'));
   
   // Return Topic videos first, then others
-  const sortedVideos = [...topicVideos, ...otherVideos].slice(0, limit);
-  
-  return sortedVideos;
+  return [...topicVideos, ...otherVideos].slice(0, limit);
 }
 
 export async function getMetadata(videoId: string) {
@@ -150,10 +289,11 @@ export async function getMetadata(videoId: string) {
       const thumbnail = info.basic_info.thumbnail?.[0]?.url || '';
       
       if (title && thumbnail) {
+        const artist = info.basic_info.author || 'Unknown Artist';
         return {
           videoId,
           title,
-          artist: info.basic_info.author || 'Unknown',
+          artist,
           duration: info.basic_info.duration || 0,
           thumbnail
         };
@@ -187,50 +327,6 @@ export async function getMetadata(videoId: string) {
   }
 }
 
-function getThumbnailUrl(thumbnails: any): string {
-  if (!thumbnails) return '';
-  if (Array.isArray(thumbnails)) {
-    return thumbnails[thumbnails.length - 1]?.url || thumbnails[0]?.url || '';
-  }
-  if (thumbnails.url) return thumbnails.url;
-  return '';
-}
-
-function normalizeTitleKey(title?: string): string {
-  const base = title?.toLowerCase() || '';
-  return base
-    .replace(/\([^)]*\)|\[[^\]]*\]|\{[^}]*\}/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function extractItemsFromSource(source: any): any[] {
-  if (!source) return [];
-  const buckets: any[] = [];
-  if (Array.isArray(source)) buckets.push(source);
-  if (Array.isArray(source.items)) buckets.push(source.items);
-  if (Array.isArray(source.contents)) buckets.push(source.contents);
-  if (Array.isArray(source.playlist?.items)) buckets.push(source.playlist.items);
-  if (Array.isArray(source.playlist?.contents)) buckets.push(source.playlist.contents);
-  if (Array.isArray(source.tabs)) {
-    buckets.push(source.tabs.flatMap((tab: any) => tab?.content?.contents || tab?.contents || []));
-  }
-  if (Array.isArray(source.sections)) {
-    buckets.push(source.sections.flatMap((section: any) => section?.contents || []));
-  }
-  return buckets.flat();
-}
-
-/** Safely extract a plain string from a youtubei.js Text / string value */
-function getText(t: any): string {
-  if (!t) return '';
-  if (typeof t === 'string') return t;
-  if (t.text && typeof t.text === 'string') return t.text;
-  if (Array.isArray(t.runs)) return t.runs.map((r: any) => r?.text || '').join('');
-  const s = String(t);
-  return s === '[object Object]' ? '' : s;
-}
-
 export async function getRelatedTracks(videoId: string, limit: number = 20): Promise<VideoResult[]> {
   const yt = await getYouTube();
   const info: any = await (yt as any).getInfo(videoId);
@@ -248,30 +344,29 @@ export async function getRelatedTracks(videoId: string, limit: number = 20): Pro
   const appendFromItems = (items: any[]) => {
     for (const item of items) {
       if (results.length >= limit) break;
+
+      // ── ID extraction ────────────────────────────────────────────────────
       const id: string = item?.id || item?.video_id || '';
       if (!id || id === videoId || seen.has(id)) continue;
-      const title = getText(item?.title);
-      if (!title) continue;
+
+      // ── Duration filter ──────────────────────────────────────────────────
       const duration = item?.duration?.seconds || item?.length_seconds || 0;
       if (duration && (duration < MIN_DURATION || duration > MAX_DURATION)) continue;
-      const artist = item?.author?.name
-        || item?.uploader?.name
-        || item?.channel?.name
-        || 'Unknown';
-      const thumbnail = getThumbnailUrl(item?.thumbnail?.contents || item?.thumbnail)
-        || `https://i.ytimg.com/vi/${id}/hqdefault.jpg`;
 
-      const titleKey = normalizeTitleKey(title);
+      // ── Normalize through centralised pipeline ───────────────────────────
+      // normalizeTrack handles ALL Innertube item shapes (WEB + WEB_REMIX),
+      // including item.artists[] from YTM which was the root cause of the
+      // Unknown Artist bug when the YTM fallback path was used.
+      const normalized = normalizeTrack({ ...item, id });
+      if (!normalized) continue;
+
+      // ── Title-level dedup ────────────────────────────────────────────────
+      const titleKey = normalizeTitleKey(normalized.title);
       if (!titleKey || seenTitles.has(titleKey)) continue;
+
       seen.add(id);
       seenTitles.add(titleKey);
-      results.push({
-        videoId: id,
-        title,
-        artist,
-        duration,
-        thumbnail
-      });
+      results.push(normalized);
     }
   };
 
@@ -411,19 +506,8 @@ export async function getYTMusicPlaylistTracks(playlistId: string): Promise<Vide
 
   const tracks: VideoResult[] = [];
   for (const item of rawItems) {
-    if (!item) continue;
-    const videoId: string = item.id || '';
-    if (!videoId) continue;
-    const title = getText(item.title);
-    if (!title) continue;
-    tracks.push({
-      videoId,
-      title,
-      artist: item.artists?.[0]?.name || item.author?.name || 'Unknown',
-      duration: item.duration?.seconds || 0,
-      thumbnail: getThumbnailUrl(item.thumbnail?.contents || item.thumbnail)
-        || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`
-    });
+    const normalized = normalizeTrack(item);
+    if (normalized) tracks.push(normalized);
   }
 
   return tracks;
@@ -447,20 +531,10 @@ export async function getYTMusicAlbumTracks(browseId: string): Promise<{ tracks:
 
   const tracks: VideoResult[] = [];
   for (const item of rawItems) {
-    if (!item) continue;
-    const videoId: string = item.id || '';
-    if (!videoId) continue;
-    const trackTitle = getText(item.title);
-    if (!trackTitle) continue;
-    tracks.push({
-      videoId,
-      title: trackTitle,
-      artist: item.artists?.[0]?.name || item.author?.name || artist,
-      duration: item.duration?.seconds || 0,
-      thumbnail: getThumbnailUrl(item.thumbnail?.contents || item.thumbnail)
-        || thumbnail
-        || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`
-    });
+    // Pass album-level artist as fallback so tracks without individual artist info
+    // still get the album artist rather than 'Unknown Artist'
+    const normalized = normalizeTrack(item, { artist, thumbnail });
+    if (normalized) tracks.push(normalized);
   }
 
   return { tracks, title, artist, thumbnail, year };
@@ -483,17 +557,9 @@ export async function getYTMusicArtistTopTracks(browseId: string): Promise<{ tra
       // Process initial batch
       for (const item of shelf.contents) {
         if (!item || !(item as any).id) continue;           // skip ContinuationItem
-        const videoId: string = (item as any).id;
-        const trackTitle = getText((item as any).title);
-        if (!trackTitle) continue;
-        tracks.push({
-          videoId,
-          title: trackTitle,
-          artist: (item as any).artists?.[0]?.name || (item as any).author?.name || name,
-          duration: (item as any).duration?.seconds || 0,
-          thumbnail: getThumbnailUrl((item as any).thumbnail?.contents || (item as any).thumbnail)
-            || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
-        });
+        // Pass artist name as fallback so tracks always have a valid artist
+        const normalized = normalizeTrack(item, { artist: name, thumbnail });
+        if (normalized) tracks.push(normalized);
       }
       
       // Paginate through all remaining pages (up to 500 tracks to avoid infinite loops)
@@ -506,18 +572,11 @@ export async function getYTMusicArtistTopTracks(browseId: string): Promise<{ tra
           
           for (const item of currentShelf.contents) {
             if (!item || !(item as any).id) continue;
-            const videoId: string = (item as any).id;
-            const trackTitle = getText((item as any).title);
-            if (!trackTitle) continue;
-            tracks.push({
-              videoId,
-              title: trackTitle,
-              artist: (item as any).artists?.[0]?.name || (item as any).author?.name || name,
-              duration: (item as any).duration?.seconds || 0,
-              thumbnail: getThumbnailUrl((item as any).thumbnail?.contents || (item as any).thumbnail)
-                || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
-            });
-            if (tracks.length >= MAX_TRACKS) break;
+            const normalized = normalizeTrack(item, { artist: name, thumbnail });
+            if (normalized) {
+              tracks.push(normalized);
+              if (tracks.length >= MAX_TRACKS) break;
+            }
           }
         } catch (paginationError) {
           console.warn('[youtube.ts] Pagination error, stopping:', paginationError);
@@ -543,21 +602,9 @@ export async function getYTMusicArtistTopTracks(browseId: string): Promise<{ tra
 
   const tracks: VideoResult[] = [];
   for (const item of rawItems) {
-    if (!item) continue;
-    const videoId: string = item.id || '';
-    if (!videoId) continue;
-    const trackTitle = getText(item.title);
-    if (!trackTitle) continue;
-    tracks.push({
-      videoId,
-      title: trackTitle,
-      artist: item.artists?.[0]?.name || item.author?.name || name,
-      duration: item.duration?.seconds || 0,
-      thumbnail: getThumbnailUrl(item.thumbnail?.contents || item.thumbnail)
-        || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`
-    });
+    const normalized = normalizeTrack(item, { artist: name, thumbnail });
+    if (normalized) tracks.push(normalized);
   }
 
   return { tracks, name, thumbnail, subscribers };
 }
-

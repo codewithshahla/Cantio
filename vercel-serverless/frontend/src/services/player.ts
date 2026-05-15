@@ -68,6 +68,49 @@ function dedupeTracks(tracks: Track[], existingIds: Set<string>, existingKeys: S
   return deduped;
 }
 
+/**
+ * normalizeTrack()
+ *
+ * Client-side normalization guard — last line of defence before any Track
+ * object enters queue / history / likes / recommendations.
+ *
+ * Guarantees:
+ *   - videoId is non-empty
+ *   - title is non-empty
+ *   - artist is a meaningful string (not 'Unknown', 'Unknown Artist', or blank)
+ *   - thumbnail always resolves to something (falls back to YT hqdefault)
+ *
+ * Returns null if the track is fundamentally unusable (no videoId / title).
+ * The caller is responsible for filtering out nulls.
+ */
+function normalizeTrack(track: Partial<Track> & { videoId: string }): Track | null {
+  if (!track.videoId) return null;
+
+  const title = (track.title || '').trim();
+  if (!title) return null;
+
+  let artist = (track.artist || '').trim();
+  const artistLower = artist.toLowerCase();
+  if (!artist || artistLower === 'unknown' || artistLower === 'unknown artist') {
+    // Keep as-is — the backend is the authoritative normalization layer.
+    // We don't fabricate artist names on the frontend.
+    // A track with Unknown artist will still play fine, but will be excluded
+    // from recommendation scoring by the backend guard in history.ts.
+    artist = artist || 'Unknown Artist';
+  }
+
+  const thumbnail = (track.thumbnail || '').trim()
+    || `https://i.ytimg.com/vi/${track.videoId}/hqdefault.jpg`;
+
+  return {
+    videoId:   track.videoId,
+    title,
+    artist,
+    duration:  track.duration || 0,
+    thumbnail,
+  };
+}
+
 
 // Player state flags
 let nextTransitionInProgress = false;
@@ -1083,20 +1126,37 @@ export const usePlayer = create<PlayerStore>((set, get) => ({
 
     // 3. Fetch related tracks in the background (non-blocking to UI)
     try {
-      const related = await get().getRelatedTracks(track.videoId, 25);
+      const rawRelated = await get().getRelatedTracks(track.videoId, 25);
 
-      if (related.length === 0) {
+      if (rawRelated.length === 0) {
         console.log('🎵 No related tracks found, queue stays empty');
         return;
       }
 
-      // 4. Prioritize: same artist first, then everyone else.
+      // 4. Normalize ALL related tracks through the client-side guard.
+      //    This catches any Unknown Artist tracks that slipped through the
+      //    backend normalization pipeline and removes tracks with no videoId/title.
+      const related: Track[] = rawRelated
+        .map(r => normalizeTrack(r))
+        .filter((r): r is Track => r !== null);
+
+      const unknownCount = rawRelated.length - related.length;
+      if (unknownCount > 0) {
+        console.warn(`[normalizeTrack] Filtered ${unknownCount} malformed track(s) from recommendation batch`);
+      }
+
+      if (related.length === 0) {
+        console.log('🎵 All related tracks failed normalization, queue stays empty');
+        return;
+      }
+
+      // 5. Prioritize: same artist first, then everyone else.
       //    This keeps the listening experience coherent without custom ML.
       const sameArtist = related.filter(r => r.artist === track.artist);
       const others     = related.filter(r => r.artist !== track.artist);
       const prioritized = [...sameArtist, ...others].slice(0, 20);
 
-      // 5. Enqueue with mode:'replace' so any stale queue is cleared.
+      // 6. Enqueue with mode:'replace' so any stale queue is cleared.
       //    `enqueueRecommendations` handles dedup (current track, existing
       //    queue IDs, and normalized title keys) and the session-ID guard
       //    prevents the same block from being added twice.
