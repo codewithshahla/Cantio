@@ -49,9 +49,25 @@ export default function OnboardingPage() {
   const [artistInput, setArtistInput] = useState('');
   const [genres, setGenres] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
+  const [checking, setChecking] = useState(true); // guard: skip if already onboarded
 
   useEffect(() => {
-    if (!isAuthenticated) navigate('/login');
+    if (!isAuthenticated) { navigate('/login'); return; }
+
+    // Check if this user actually needs onboarding — redirect to / if already done
+    api.fetch('/preferences/needs-onboarding')
+      .then(r => r.json())
+      .then(data => {
+        if (!data.needsOnboarding) {
+          navigate('/');
+        } else {
+          setChecking(false);
+        }
+      })
+      .catch(() => {
+        // If check fails, show onboarding anyway (safe fallback)
+        setChecking(false);
+      });
   }, [isAuthenticated, navigate]);
 
   const toggleItem = (
@@ -81,6 +97,7 @@ export default function OnboardingPage() {
   const handleFinish = async () => {
     setSaving(true);
     try {
+      // Save to user_preferences (marks onboardingDone and stores choices)
       await api.fetch('/preferences', {
         method: 'POST',
         body: JSON.stringify({
@@ -90,6 +107,11 @@ export default function OnboardingPage() {
           onboardingDone: true,
         }),
       });
+
+      // Fire-and-forget: seed recommendations from preferences in the background.
+      // Non-blocking — if this fails, user still gets to the home page.
+      api.fetch('/preferences/seed', { method: 'POST' }).catch(() => {});
+
       navigate('/');
     } catch (err) {
       console.error('Failed to save preferences:', err);
@@ -111,6 +133,15 @@ export default function OnboardingPage() {
     }
     navigate('/');
   };
+
+  // Show spinner while checking onboarding status
+  if (checking) {
+    return (
+      <div className="flex items-center justify-center min-h-[calc(100vh-12rem)]">
+        <div className="w-8 h-8 rounded-full border-2 border-purple-500 border-t-transparent animate-spin" />
+      </div>
+    );
+  }
 
   const isLastStep = step === STEPS.length - 1;
 

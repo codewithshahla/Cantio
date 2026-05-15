@@ -7,15 +7,12 @@ import { Eye, EyeOff, Mail } from 'lucide-react';
 export default function RegisterPage() {
   const navigate = useNavigate();
   const isAuthenticated = useAuth((s) => s.isAuthenticated);
-  const [step, setStep] = useState<1 | 2 | 3>(1);
+  const [step, setStep] = useState<1 | 2>(1);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [name, setName] = useState('');
   const [otp, setOtp] = useState('');
-  const [favoriteLanguage, setFavoriteLanguage] = useState('');
-  const [favoriteArtists, setFavoriteArtists] = useState('');
-  const [favoriteGenres, setFavoriteGenres] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [error, setError] = useState('');
@@ -66,27 +63,12 @@ export default function RegisterPage() {
       setError('Enter the 6-digit verification code');
       return;
     }
-    setStep(3);
-  };
-
-  const parseList = (value: string) => value
-    .split(',')
-    .map(item => item.trim())
-    .filter(Boolean)
-    .slice(0, 10);
-
-  const handleCompleteRegistration = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError('');
     setLoading(true);
     try {
-      const preferences = {
-        favoriteLanguage: favoriteLanguage.trim() || undefined,
-        favoriteArtists: parseList(favoriteArtists),
-        favoriteGenres: parseList(favoriteGenres)
-      };
-      await api.register(email, password, otp, name || undefined, preferences);
-      navigate('/');
+      // Register the account (no inline preferences — OnboardingPage handles that)
+      await api.register(email, password, otp, name || undefined);
+      // Redirect to the dedicated onboarding flow for new users
+      navigate('/onboarding');
     } catch (err: any) {
       setError(err.message || 'Registration failed');
     } finally {
@@ -226,7 +208,7 @@ export default function RegisterPage() {
                 {loading ? 'Sending code...' : 'Send Verification Code'}
               </button>
             </form>
-          ) : step === 2 ? (
+          ) : (
             <form onSubmit={handleContinueToPreferences} className="space-y-5">
               <div className="p-4 rounded-xl bg-purple-500/10 border border-purple-500/20 flex items-start gap-3">
                 <Mail className="w-5 h-5 text-purple-400 mt-0.5 shrink-0" />
@@ -277,72 +259,6 @@ export default function RegisterPage() {
                   className="text-purple-400 hover:text-purple-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {resendCooldown > 0 ? `Resend in ${resendCooldown}s` : 'Resend code'}
-                </button>
-              </div>
-            </form>
-          ) : (
-            <form onSubmit={handleCompleteRegistration} className="space-y-5">
-              <div>
-                <label htmlFor="favoriteLanguage" className="block text-sm font-medium mb-2">
-                  Favorite language (optional)
-                </label>
-                <input
-                  id="favoriteLanguage"
-                  type="text"
-                  value={favoriteLanguage}
-                  onChange={(e) => setFavoriteLanguage(e.target.value)}
-                  disabled={loading}
-                  className="w-full px-4 py-3 rounded-lg bg-white/5 border border-white/10 focus:border-purple-500 focus:ring-2 focus:ring-purple-500/20 outline-none transition-all disabled:opacity-50"
-                  placeholder="English, Hindi, Spanish"
-                />
-              </div>
-
-              <div>
-                <label htmlFor="favoriteArtists" className="block text-sm font-medium mb-2">
-                  Favorite artists (comma separated)
-                </label>
-                <input
-                  id="favoriteArtists"
-                  type="text"
-                  value={favoriteArtists}
-                  onChange={(e) => setFavoriteArtists(e.target.value)}
-                  disabled={loading}
-                  className="w-full px-4 py-3 rounded-lg bg-white/5 border border-white/10 focus:border-purple-500 focus:ring-2 focus:ring-purple-500/20 outline-none transition-all disabled:opacity-50"
-                  placeholder="A. R. Rahman, Dua Lipa, Arijit Singh"
-                />
-                <p className="mt-1 text-xs text-gray-500">Up to 10 artists</p>
-              </div>
-
-              <div>
-                <label htmlFor="favoriteGenres" className="block text-sm font-medium mb-2">
-                  Favorite genres (comma separated)
-                </label>
-                <input
-                  id="favoriteGenres"
-                  type="text"
-                  value={favoriteGenres}
-                  onChange={(e) => setFavoriteGenres(e.target.value)}
-                  disabled={loading}
-                  className="w-full px-4 py-3 rounded-lg bg-white/5 border border-white/10 focus:border-purple-500 focus:ring-2 focus:ring-purple-500/20 outline-none transition-all disabled:opacity-50"
-                  placeholder="Pop, Hip-Hop, Lo-fi"
-                />
-                <p className="mt-1 text-xs text-gray-500">Up to 10 genres</p>
-              </div>
-
-              <div className="flex gap-3 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setStep(2)}
-                  className="flex-1 px-4 py-3 bg-white/10 hover:bg-white/20 rounded-lg font-semibold transition-colors"
-                >
-                  Back
-                </button>
-                <button
-                  type="submit"
-                  disabled={loading}
-                  className="flex-1 px-4 py-3 bg-white text-black hover:bg-gray-200 rounded-lg font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {loading ? 'Creating account...' : 'Create Account'}
                 </button>
               </div>
             </form>

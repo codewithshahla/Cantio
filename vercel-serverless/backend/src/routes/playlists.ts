@@ -26,39 +26,6 @@ const publicSearchSchema = z.object({
 });
 
 export default async function playlistsRoutes(fastify: FastifyInstance) {
-  // Get public playlist by ID (no auth)
-  fastify.get('/public/:id', async (request, reply) => {
-    try {
-      const { id } = request.params as { id: string };
-      const playlist = await prisma.playlist.findFirst({
-        where: { id, isPublic: true },
-        include: {
-          tracks: { orderBy: { position: 'asc' } },
-          user: {
-            select: {
-              id: true,
-              username: true,
-              name: true,
-              avatar: true
-            }
-          }
-        },
-        cacheStrategy: { ttl: 120, swr: 60 }
-      });
-
-      if (!playlist) {
-        reply.code(404);
-        return { error: 'Playlist not found' };
-      }
-
-      return { playlist };
-    } catch (error) {
-      fastify.log.error(error);
-      reply.code(500);
-      return { error: 'Failed to fetch public playlist' };
-    }
-  });
-
   // Search public playlists (no auth)
   fastify.get('/public', async (request, reply) => {
     const parsed = publicSearchSchema.safeParse(request.query);

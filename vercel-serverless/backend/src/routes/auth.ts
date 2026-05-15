@@ -76,6 +76,20 @@ export default async function authRoutes(fastify: FastifyInstance) {
         }
       });
 
+      // Create initial user_preferences row so that needs-onboarding returns true
+      // for this new account. Uses upsert to be safe against duplicate calls.
+      await prisma.userPreferences.upsert({
+        where: { userId: user.id },
+        create: {
+          userId: user.id,
+          favoriteLanguages: [],
+          favoriteArtists: [],
+          favoriteGenres: [],
+          onboardingDone: false,
+        },
+        update: {}, // Don't overwrite if somehow already exists
+      });
+
       if (body.preferences) {
         const seedTracks = await buildOnboardingSeedTracks(body.preferences, 20);
         await prisma.userOnboardingPreferences.create({

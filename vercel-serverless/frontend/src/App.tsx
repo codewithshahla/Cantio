@@ -26,7 +26,6 @@ import { BlendInviteNotifications } from './components/BlendInviteNotifications'
 import DownloadPopup from './components/DownloadPopup';
 import { LandingPage } from './pages/LandingPage';
 import OnboardingPage from './pages/OnboardingPage';
-import PublicPlaylistPage from './pages/PublicPlaylistPage';
 
 function AppContent() {
   const isPlayerVisible = usePlayer((state) => state.isPlayerVisible);

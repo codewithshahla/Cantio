@@ -34,20 +34,32 @@ function isDuplicateSession(sessionId: string): boolean {
   return false;
 }
 
-function normalizeTitleKey(title?: string): string {
-  const base = title?.toLowerCase() || '';
-  return base
-    .replace(/\([^)]*\)|\[[^\]]*\]|\{[^}]*\}/g, '')
+// Strip parenthetical suffixes like "(Official Video)", "[Lyric Video]", "feat. X", etc.
+// so "Song Title (Official Audio)" and "Song Title" are treated as the same.
+function normalizeText(text?: string): string {
+  return (text?.toLowerCase() || '')
+    .replace(/\([^)]*\)|\[[^\]]*\]|\{[^}]*\}/g, '') // strip (parens) [brackets] {braces}
+    .replace(/\bfeat\.?.*$/i, '')                    // strip "feat. X" suffix
+    .replace(/[^\w\s]/g, ' ')                        // replace punctuation with space
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+// Build a composite key from both title AND artist so that:
+//   same song + same artist + different uploader  → duplicate  ✓
+//   same song name + different artist             → NOT duplicate  ✓
+function trackKey(track: Pick<Track, 'title' | 'artist'>): string {
+  return `${normalizeText(track.title)}∷${normalizeText(track.artist)}`;
 }
 
 function dedupeTracks(tracks: Track[], existingIds: Set<string>, existingKeys: Set<string>): Track[] {
   const deduped: Track[] = [];
   for (const track of tracks) {
     if (!track?.videoId) continue;
+    // Fast-path: exact same upload already present
     if (existingIds.has(track.videoId)) continue;
-    const key = normalizeTitleKey(track.title);
+    // Content-level dedup: same song + same artist regardless of video ID
+    const key = trackKey(track);
     if (existingKeys.has(key)) continue;
     existingIds.add(track.videoId);
     existingKeys.add(key);
@@ -55,6 +67,7 @@ function dedupeTracks(tracks: Track[], existingIds: Set<string>, existingKeys: S
   }
   return deduped;
 }
+
 
 // Player state flags
 let nextTransitionInProgress = false;
@@ -200,6 +213,13 @@ interface PlayerStore {
   reorderQueue: (fromIndex: number, toIndex: number) => void;
   clearQueue: () => Promise<void>;
   getRelatedTracks: (videoId: string, limit?: number) => Promise<Track[]>;
+  /**
+   * Play a track immediately, then asynchronously generate a recommendation
+   * queue using YouTube Music related tracks. Handles prioritization and
+   * deduplication internally — UI components should call this instead of
+   * wiring up fetch + enqueue logic themselves.
+   */
+  playWithRecommendations: (track: Track) => Promise<void>;
   setSleepTimer: (options: { mode: 'duration'; durationMs: number } | { mode: 'end' }) => void;
   clearSleepTimer: () => void;
   like: (track: Track) => Promise<void>;
@@ -960,39 +980,18 @@ export const usePlayer = create<PlayerStore>((set, get) => ({
   },
 
   addToQueue: async (track: Track) => {
+    // User explicitly added — always append, even if already in queue
     await get().appendQueue([track]);
   },
 
-  appendQueue: async (tracks: Track[], sessionId?: string) => {
-    if (sessionId && isDuplicateSession(sessionId)) return;
-
-    const { queue, currentTrack } = get();
-    const { manualQueue } = useQueue.getState();
-
-    const existingIds = new Set<string>([currentTrack?.videoId || '']);
-    const existingKeys = new Set<string>();
-    const addKey = (track?: Track | null) => {
-      if (!track) return;
-      const key = normalizeTitleKey(track.title);
-      if (key) existingKeys.add(key);
-    };
-
-    addKey(currentTrack);
-    queue.forEach(t => {
-      existingIds.add(t.videoId);
-      addKey(t);
-    });
-    manualQueue.forEach(t => {
-      existingIds.add(t.videoId);
-      addKey(t);
-    });
-
-    const deduped = dedupeTracks(tracks, existingIds, existingKeys);
-    if (deduped.length === 0) return;
-
-    const newQueue = [...queue, ...deduped];
-    set({ queue: newQueue });
-    await cache.appendQueue(deduped);
+  appendQueue: async (tracks: Track[]) => {
+    // No dedup here — user explicitly chose these tracks.
+    // Dedup only happens in enqueueRecommendations (the auto path).
+    const { queue } = get();
+    const valid = tracks.filter(t => t?.videoId);
+    if (valid.length === 0) return;
+    set({ queue: [...queue, ...valid] });
+    await cache.appendQueue(valid);
   },
 
   replaceQueue: async (tracks: Track[], sessionId?: string) => {
@@ -1003,17 +1002,11 @@ export const usePlayer = create<PlayerStore>((set, get) => ({
 
     const existingIds = new Set<string>([currentTrack?.videoId || '']);
     const existingKeys = new Set<string>();
-    const addKey = (track?: Track | null) => {
-      if (!track) return;
-      const key = normalizeTitleKey(track.title);
-      if (key) existingKeys.add(key);
-    };
+    // Seed existing keys using the same composite title∷artist key used by dedupeTracks
+    const addKey = (t?: Track | null) => { if (t) existingKeys.add(trackKey(t)); };
 
     addKey(currentTrack);
-    manualQueue.forEach(t => {
-      existingIds.add(t.videoId);
-      addKey(t);
-    });
+    manualQueue.forEach(t => { existingIds.add(t.videoId); addKey(t); });
 
     const deduped = dedupeTracks(tracks, existingIds, existingKeys);
     set({ queue: deduped });
@@ -1022,11 +1015,32 @@ export const usePlayer = create<PlayerStore>((set, get) => ({
 
   enqueueRecommendations: async (tracks: Track[], options?: { sessionId?: string; mode?: 'append' | 'replace' }) => {
     const mode = options?.mode || 'append';
+    const sessionId = options?.sessionId;
+
+    // Session guard — prevents the same recommendation block from being
+    // enqueued twice due to async race conditions (e.g. double-click).
+    if (sessionId && isDuplicateSession(sessionId)) return;
+
+    // Dedup against current queue — recommendations should never add what's
+    // already playing or already in the queue.
+    // (User-explicit appendQueue bypasses this intentionally.)
+    const { queue, currentTrack } = get();
+    const { manualQueue } = useQueue.getState();
+    const existingIds = new Set<string>([currentTrack?.videoId ?? '']);
+    const existingKeys = new Set<string>();
+    const addKey = (t?: Track | null) => { if (t) existingKeys.add(trackKey(t)); };
+    addKey(currentTrack);
+    queue.forEach(t => { existingIds.add(t.videoId); addKey(t); });
+    manualQueue.forEach(t => { existingIds.add(t.videoId); addKey(t); });
+
+    const deduped = dedupeTracks(tracks, existingIds, existingKeys);
+    if (deduped.length === 0) return;
+
     if (mode === 'replace') {
-      await get().replaceQueue(tracks, options?.sessionId);
-      return;
+      await get().replaceQueue(deduped);
+    } else {
+      await get().appendQueue(deduped);
     }
-    await get().appendQueue(tracks, options?.sessionId);
   },
 
   removeFromQueue: async (index: number) => {
@@ -1050,12 +1064,49 @@ export const usePlayer = create<PlayerStore>((set, get) => ({
     await get().replaceQueue([]);
   },
 
-  getRelatedTracks: async (videoId: string, limit: number = 20) => {
+  getRelatedTracks: async (videoId: string, limit: number = 25) => {
+    // Request slightly more than needed so dedup still yields a full queue
     const params = new URLSearchParams({ limit: limit.toString() });
     const response = await fetch(`${API_BASE}/track/${videoId}/related?${params}`);
     if (!response.ok) return [];
     const data = await response.json();
     return (data.tracks || []) as Track[];
+  },
+
+  playWithRecommendations: async (track: Track) => {
+    // 1. Start playback immediately — don't wait for recommendations
+    await get().play(track);
+
+    // 2. Build a stable session ID so clicking the same track twice in quick
+    //    succession doesn't enqueue a second recommendation block.
+    const sessionId = `rec:${track.videoId}`;
+
+    // 3. Fetch related tracks in the background (non-blocking to UI)
+    try {
+      const related = await get().getRelatedTracks(track.videoId, 25);
+
+      if (related.length === 0) {
+        console.log('🎵 No related tracks found, queue stays empty');
+        return;
+      }
+
+      // 4. Prioritize: same artist first, then everyone else.
+      //    This keeps the listening experience coherent without custom ML.
+      const sameArtist = related.filter(r => r.artist === track.artist);
+      const others     = related.filter(r => r.artist !== track.artist);
+      const prioritized = [...sameArtist, ...others].slice(0, 20);
+
+      // 5. Enqueue with mode:'replace' so any stale queue is cleared.
+      //    `enqueueRecommendations` handles dedup (current track, existing
+      //    queue IDs, and normalized title keys) and the session-ID guard
+      //    prevents the same block from being added twice.
+      await get().enqueueRecommendations(prioritized, { sessionId, mode: 'replace' });
+
+      console.log(`🎵 Recommendation queue: ${prioritized.length} tracks (${sameArtist.length} same-artist + ${others.length} related)`);
+    } catch (err) {
+      // Recommendation failure is non-fatal — playback already started
+      console.warn('⚠️  Failed to build recommendation queue:', err);
+    }
   },
 
   setSleepTimer: (options) => {

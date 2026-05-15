@@ -96,4 +96,70 @@ export default async function preferencesRoutes(fastify: FastifyInstance) {
       return { error: 'Failed to check onboarding status' };
     }
   });
+
+  // Seed recommendations from saved preferences (called after onboarding completes)
+  fastify.post('/seed', {
+    onRequest: [fastify.authenticate]
+  }, async (request, reply) => {
+    try {
+      const userId = (request.user as any).id;
+
+      const prefs = await prisma.userPreferences.findUnique({
+        where: { userId },
+      });
+
+      if (!prefs) {
+        return { seeded: false, reason: 'No preferences found' };
+      }
+
+      // Build seed tracks from user choices using YouTube Music searches
+      const { buildOnboardingSeedTracks } = await import('../lib/onboarding.js');
+      const seedTracks = await buildOnboardingSeedTracks({
+        favoriteLanguage: prefs.favoriteLanguages[0], // primary language
+        favoriteArtists: prefs.favoriteArtists,
+        favoriteGenres: prefs.favoriteGenres,
+      }, 20);
+
+      if (seedTracks.length === 0) {
+        return { seeded: false, reason: 'No seed tracks found' };
+      }
+
+      // Upsert into user_onboarding_preferences so recommendations can use them
+      await prisma.userOnboardingPreferences.upsert({
+        where: { userId },
+        create: {
+          userId,
+          favoriteLanguage: prefs.favoriteLanguages[0] ?? null,
+          favoriteArtists: prefs.favoriteArtists,
+          favoriteGenres: prefs.favoriteGenres,
+          seedTracks: seedTracks.map(t => ({
+            videoId: t.videoId,
+            title: t.title,
+            artist: t.artist,
+            thumbnail: t.thumbnail,
+            duration: t.duration,
+          })),
+        },
+        update: {
+          favoriteLanguage: prefs.favoriteLanguages[0] ?? null,
+          favoriteArtists: prefs.favoriteArtists,
+          favoriteGenres: prefs.favoriteGenres,
+          seedTracks: seedTracks.map(t => ({
+            videoId: t.videoId,
+            title: t.title,
+            artist: t.artist,
+            thumbnail: t.thumbnail,
+            duration: t.duration,
+          })),
+        },
+      });
+
+      fastify.log.info(`Seeded ${seedTracks.length} tracks for user ${userId}`);
+      return { seeded: true, count: seedTracks.length };
+    } catch (error) {
+      fastify.log.error(error);
+      // Non-fatal — return 200 so the client doesn't retry aggressively
+      return { seeded: false, reason: 'Seed generation failed' };
+    }
+  });
 }

@@ -26,6 +26,7 @@ model User {
   blendsAsUser1       Blend[]          @relation("BlendUser1")
   blendsAsUser2       Blend[]          @relation("BlendUser2")
   onboardingPreferences UserOnboardingPreferences?
+  preferences           UserPreferences?
   
   @@index([email])
   @@index([username])
@@ -211,6 +212,22 @@ model SystemCache {
   updatedAt DateTime @updatedAt
   
   @@map("system_cache")
+}
+
+model UserPreferences {
+  id                String   @id @default(cuid())
+  userId            String   @unique
+  favoriteLanguages String[]
+  favoriteArtists   String[]
+  favoriteGenres    String[]
+  onboardingDone    Boolean  @default(false)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("user_preferences")
 }
 
 model UserOnboardingPreferences {

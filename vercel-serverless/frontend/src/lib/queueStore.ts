@@ -71,28 +71,62 @@ function removeTrackById(tracks: Track[], videoId: string): Track[] {
 }
 
 /**
- * F2: Deduplicate a track array against a set of existing video IDs.
- * Returns only tracks whose videoId is NOT in `existingIds`,
- * and also deduplicates within the input array itself.
+ * Normalize text for content-level dedup:
+ * strips parentheticals like "(Official Video)", feat. suffixes, punctuation.
  */
-function deduplicateTracks(incoming: Track[], existingIds: Set<string>): Track[] {
+function normalizeText(text?: string): string {
+  return (text?.toLowerCase() || '')
+    .replace(/\([^)]*\)|\[[^\]]*\]|\{[^}]*\}/g, '')
+    .replace(/\bfeat\.?.*$/i, '')
+    .replace(/[^\w\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Composite dedup key — combines normalized title + artist so:
+ *   same song + same artist + different uploader  → duplicate  ✓
+ *   same song name + different artist (cover)     → NOT duplicate  ✓
+ */
+function trackKey(track: Pick<Track, 'title' | 'artist'>): string {
+  return `${normalizeText(track.title)}\u2237${normalizeText(track.artist)}`;
+}
+
+/**
+ * F2: Deduplicate a track array using BOTH videoId AND composite title∷artist key.
+ * Takes existing Track objects (not just IDs) so title-key dedup works against
+ * tracks already in the queue.
+ */
+function deduplicateTracks(incoming: Track[], existing: Track[]): Track[] {
   const out: Track[] = [];
-  const seen = new Set(existingIds);
+  const seenIds  = new Set<string>();
+  const seenKeys = new Set<string>();
+
+  // Pre-seed from existing queue state
+  for (const t of existing) {
+    seenIds.add(t.videoId);
+    seenKeys.add(trackKey(t));
+  }
+
+  // Filter incoming
   for (const t of incoming) {
-    if (seen.has(t.videoId)) continue;
-    seen.add(t.videoId);
+    if (seenIds.has(t.videoId)) continue;
+    const key = trackKey(t);
+    if (seenKeys.has(key)) continue;
+    seenIds.add(t.videoId);
+    seenKeys.add(key);
     out.push(t);
   }
   return out;
 }
 
-/** Collect all videoIds currently in the queue state */
-function allQueueIds(state: Pick<QueueState, 'currentTrack' | 'queue' | 'manualQueue'>): Set<string> {
-  const ids = new Set<string>();
-  if (state.currentTrack) ids.add(state.currentTrack.videoId);
-  for (const t of state.queue) ids.add(t.videoId);
-  for (const t of state.manualQueue) ids.add(t.videoId);
-  return ids;
+/** Collect all Track objects currently in the queue state (for dedup seeding) */
+function allQueueTracks(state: Pick<QueueState, 'currentTrack' | 'queue' | 'manualQueue'>): Track[] {
+  const tracks: Track[] = [];
+  if (state.currentTrack) tracks.push(state.currentTrack);
+  for (const t of state.queue) tracks.push(t);
+  for (const t of state.manualQueue) tracks.push(t);
+  return tracks;
 }
 
 // -----------------------------------------------------------------
@@ -129,12 +163,10 @@ export const useQueue = create<QueueState>((set, get) => ({
 
   // ---------------------------------------------------------------
   // addToQueue — user explicitly queues a track (priority queue)
-  // Deduplicates if already present in manualQueue.
+  // No dedup — if user explicitly adds the same song again, allow it.
   // ---------------------------------------------------------------
   addToQueue: (track: Track) => {
     const { manualQueue } = get();
-    const alreadyQueued = manualQueue.some(t => t.videoId === track.videoId);
-    if (alreadyQueued) return;
     set({ manualQueue: [...manualQueue, track] });
   },
 
@@ -327,15 +359,16 @@ export const useQueue = create<QueueState>((set, get) => ({
 
   appendQueue: (tracks: Track[]) => {
     const state = get();
-    const existing = allQueueIds(state);
-    const deduped = deduplicateTracks(tracks, existing);
-    if (deduped.length === 0) return;
-    set({ queue: [...state.queue, ...deduped] });
+    // No dedup — user explicitly chose these tracks.
+    // Dedup only applies to enqueueRecommendations (the auto path).
+    const valid = tracks.filter(t => t?.videoId);
+    if (valid.length === 0) return;
+    set({ queue: [...state.queue, ...valid] });
   },
 
   replaceQueue: (tracks: Track[], sessionId?: string) => {
-    // Deduplicate within the incoming list itself
-    const deduped = deduplicateTracks(tracks, new Set<string>());
+    // Deduplicate within the incoming list itself (no existing queue)
+    const deduped = deduplicateTracks(tracks, []);
     set({
       queue: deduped,
       manualQueue: [],
@@ -345,18 +378,23 @@ export const useQueue = create<QueueState>((set, get) => ({
 
   enqueueRecommendations: (tracks: Track[], sessionId: string) => {
     const state = get();
-    // Guard: if the same session already populated the queue, skip
+    // Guard: if the same recommendation session already populated the queue, skip.
+    // This prevents async race conditions from adding the same block twice
+    // (e.g. user clicks a track, recommendation fetch resolves twice).
     if (state.queueSessionId === sessionId) {
       console.log('[Queue] Duplicate recommendation session ignored:', sessionId);
       return;
     }
-    const existing = allQueueIds(state);
-    const deduped = deduplicateTracks(tracks, existing);
-    if (deduped.length === 0) return;
+    const deduped = deduplicateTracks(tracks, allQueueTracks(state));
+    // Even if all tracks deduplicated away, update session ID so future
+    // calls with this sessionId are also no-ops.
     set({
-      queue: [...state.queue, ...deduped],
+      queue: deduped.length > 0 ? [...state.queue, ...deduped] : state.queue,
       queueSessionId: sessionId,
     });
+    if (deduped.length > 0) {
+      console.log(`[Queue] Recommendations enqueued: ${deduped.length} tracks (session: ${sessionId})`);
+    }
   },
 
   reorderQueue: (fromIndex: number, toIndex: number) => {

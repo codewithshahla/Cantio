@@ -53,7 +53,7 @@ export function SearchPage() {
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [currentLimit, setCurrentLimit] = useState(10);
-  const { play, appendQueue, enqueueRecommendations, getRelatedTracks, currentTrack, state, like, unlike, isLiked } = usePlayer();
+  const { play, appendQueue, playWithRecommendations, currentTrack, state, like, unlike, isLiked } = usePlayer();
   const { publicPlaylists, searchPublicPlaylists } = usePlaylist();
 
   const handleSearch = async (e: React.FormEvent) => {
@@ -104,15 +104,11 @@ export function SearchPage() {
     }
   };
 
-  const handlePlay = async (track: Track, index: number) => {
-    await play(track);
-    const sessionId = `related:${track.videoId}`;
-    const related = await getRelatedTracks(track.videoId, 40);
-    const sameArtist = related.filter(r => r.artist === track.artist);
-    const others = related.filter(r => r.artist !== track.artist);
-    const combined = [...sameArtist, ...others].slice(0, 20);
-
-    await enqueueRecommendations(combined, { sessionId, mode: 'replace' });
+  // Play track and automatically build a recommendation queue from
+  // YouTube Music related tracks. All fetch/prioritize/dedup logic
+  // lives in playWithRecommendations inside the player service.
+  const handlePlay = async (track: Track, _index: number) => {
+    await playWithRecommendations(track);
   };
 
   const handleAddToQueue = async (e: React.MouseEvent, track: Track) => {
