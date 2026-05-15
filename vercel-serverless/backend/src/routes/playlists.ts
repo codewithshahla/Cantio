@@ -19,7 +19,93 @@ const bulkTracksSchema = z.object({
   })).min(1, 'tracks array must not be empty'),
 });
 
+const publicSearchSchema = z.object({
+  q: z.string().max(100).optional(),
+  limit: z.coerce.number().int().min(1).max(50).default(20),
+  offset: z.coerce.number().int().min(0).default(0),
+});
+
 export default async function playlistsRoutes(fastify: FastifyInstance) {
+  // Get public playlist by ID (no auth)
+  fastify.get('/public/:id', async (request, reply) => {
+    try {
+      const { id } = request.params as { id: string };
+      const playlist = await prisma.playlist.findFirst({
+        where: { id, isPublic: true },
+        include: {
+          tracks: { orderBy: { position: 'asc' } },
+          user: {
+            select: {
+              id: true,
+              username: true,
+              name: true,
+              avatar: true
+            }
+          }
+        },
+        cacheStrategy: { ttl: 120, swr: 60 }
+      });
+
+      if (!playlist) {
+        reply.code(404);
+        return { error: 'Playlist not found' };
+      }
+
+      return { playlist };
+    } catch (error) {
+      fastify.log.error(error);
+      reply.code(500);
+      return { error: 'Failed to fetch public playlist' };
+    }
+  });
+
+  // Search public playlists (no auth)
+  fastify.get('/public', async (request, reply) => {
+    const parsed = publicSearchSchema.safeParse(request.query);
+    if (!parsed.success) {
+      reply.code(400);
+      return { error: 'Invalid query parameters', details: parsed.error.errors };
+    }
+    const { q, limit, offset } = parsed.data;
+
+    try {
+      const where = q
+        ? {
+            isPublic: true,
+            OR: [
+              { name: { contains: q, mode: 'insensitive' as const } },
+              { description: { contains: q, mode: 'insensitive' as const } }
+            ]
+          }
+        : { isPublic: true };
+
+      const playlists = await prisma.playlist.findMany({
+        where,
+        include: {
+          _count: { select: { tracks: true } },
+          user: {
+            select: {
+              id: true,
+              username: true,
+              name: true,
+              avatar: true
+            }
+          }
+        },
+        orderBy: { updatedAt: 'desc' },
+        take: limit,
+        skip: offset,
+        cacheStrategy: { ttl: 120, swr: 60 }
+      });
+
+      return { playlists };
+    } catch (error) {
+      fastify.log.error(error);
+      reply.code(500);
+      return { error: 'Failed to search public playlists' };
+    }
+  });
+
   // Get all user playlists
   fastify.get('/', {
     onRequest: [fastify.authenticate]

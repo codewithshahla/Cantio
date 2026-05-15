@@ -130,12 +130,53 @@ export default async function recommendations(fastify: FastifyInstance) {
       tracks: tracksByArtist.get(artistGroup.artist) || []
     }));
 
-    const recommendations: Recommendations = {
-      recentlyPlayed,
-      mostPlayed,
-      topArtists
-    };
+    const hasHistory = recentlyPlayed.length > 0 || mostPlayed.length > 0 || topArtists.length > 0;
 
-    return { recommendations };
+    if (!hasHistory) {
+      const preferences = await prisma.userOnboardingPreferences.findUnique({
+        where: { userId }
+      });
+
+      const seedTracksRaw = Array.isArray(preferences?.seedTracks)
+        ? preferences?.seedTracks
+        : [];
+
+      const seedTracks: Track[] = seedTracksRaw
+        .map((track: any) => ({
+          videoId: track.videoId,
+          title: track.title,
+          artist: track.artist,
+          thumbnail: track.thumbnail || '',
+          duration: track.duration || 0
+        }))
+        .filter((track: Track) => Boolean(track.videoId && track.title && track.artist));
+
+      const artistsMap = new Map<string, Track[]>();
+      for (const track of seedTracks) {
+        if (!artistsMap.has(track.artist)) {
+          artistsMap.set(track.artist, []);
+        }
+        const list = artistsMap.get(track.artist)!;
+        if (!list.some(t => t.videoId === track.videoId)) {
+          list.push(track);
+        }
+      }
+
+      const seededTopArtists: TopArtist[] = Array.from(artistsMap.entries()).map(([name, tracks]) => ({
+        name,
+        playCount: tracks.length,
+        tracks: tracks.slice(0, 8)
+      }));
+
+      return {
+        recommendations: {
+          recentlyPlayed: [],
+          mostPlayed: seedTracks.slice(0, 10),
+          topArtists: seededTopArtists.slice(0, 5)
+        }
+      };
+    }
+
+    return { recommendations: { recentlyPlayed, mostPlayed, topArtists } };
   });
 }

@@ -15,6 +15,11 @@ export const registerSchema = z.object({
     .min(1, 'Name is required')
     .max(100, 'Name must be at most 100 characters')
     .optional(),
+  preferences: z.object({
+    favoriteLanguage: z.string().max(50).optional(),
+    favoriteArtists: z.array(z.string().min(1).max(80)).max(10).optional(),
+    favoriteGenres: z.array(z.string().min(1).max(40)).max(10).optional(),
+  }).optional(),
 });
 
 export const loginSchema = z.object({

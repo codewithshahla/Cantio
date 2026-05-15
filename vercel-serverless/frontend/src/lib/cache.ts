@@ -194,6 +194,17 @@ export class CacheManager {
     await this.save();
   }
 
+  async appendQueue(tracks: Track[]): Promise<void> {
+    if (tracks.length === 0) return;
+    this.cache!.queue.push(...tracks);
+    await this.save();
+  }
+
+  async setQueue(tracks: Track[]): Promise<void> {
+    this.cache!.queue = [...tracks];
+    await this.save();
+  }
+
   async removeFromQueue(index: number): Promise<void> {
     this.cache!.queue.splice(index, 1);
     await this.save();

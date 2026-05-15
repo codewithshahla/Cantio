@@ -49,6 +49,9 @@ export default function PlayerBar() {
     like,
     unlike,
     isLiked,
+    sleepTimer,
+    setSleepTimer,
+    clearSleepTimer,
   } = usePlayer();
 
   const navigate = useNavigate();
@@ -183,6 +186,23 @@ export default function PlayerBar() {
         console.error('❌ Share failed:', error);
       }
     }
+  };
+
+  const formatSleepTimer = () => {
+    if (!sleepTimer) return 'Off';
+    if (sleepTimer.mode === 'end') return 'End of song';
+    if (!sleepTimer.endsAt) return 'On';
+    const remainingMs = Math.max(0, sleepTimer.endsAt - Date.now());
+    const minutes = Math.ceil(remainingMs / 60000);
+    return `${minutes} min`;
+  };
+
+  const handleCustomTimer = () => {
+    const input = window.prompt('Sleep timer (minutes):');
+    if (!input) return;
+    const minutes = Number.parseInt(input, 10);
+    if (!Number.isFinite(minutes) || minutes <= 0) return;
+    setSleepTimer({ mode: 'duration', durationMs: minutes * 60 * 1000 });
   };
 
   const progressPercent = duration > 0 ? (progress / duration) * 100 : 0;
@@ -727,6 +747,49 @@ export default function PlayerBar() {
                         <Share2 size={22} className="text-white/70" />
                         <span className="text-white">Share</span>
                       </button>
+                      <div className="pt-2 border-t border-white/10">
+                        <div className="px-2 py-2 text-xs uppercase tracking-wider text-white/40">
+                          Sleep Timer ({formatSleepTimer()})
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <button
+                            onClick={() => setSleepTimer({ mode: 'duration', durationMs: 15 * 60 * 1000 })}
+                            className="px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-sm"
+                          >
+                            15 min
+                          </button>
+                          <button
+                            onClick={() => setSleepTimer({ mode: 'duration', durationMs: 30 * 60 * 1000 })}
+                            className="px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-sm"
+                          >
+                            30 min
+                          </button>
+                          <button
+                            onClick={() => setSleepTimer({ mode: 'duration', durationMs: 60 * 60 * 1000 })}
+                            className="px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-sm"
+                          >
+                            1 hour
+                          </button>
+                          <button
+                            onClick={() => setSleepTimer({ mode: 'end' })}
+                            className="px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-sm"
+                          >
+                            End of song
+                          </button>
+                          <button
+                            onClick={handleCustomTimer}
+                            className="px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-sm"
+                          >
+                            Custom
+                          </button>
+                          <button
+                            onClick={clearSleepTimer}
+                            className="px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-sm"
+                          >
+                            Off
+                          </button>
+                        </div>
+                      </div>
                     </div>
                   </motion.div>
                 </>

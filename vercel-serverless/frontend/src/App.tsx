@@ -9,6 +9,7 @@ import { LikedPage } from './pages/LikedPage';
 import { QueuePage } from './pages/QueuePage';
 import { PlaylistsPage } from './pages/PlaylistsPage';
 import { PlaylistDetailPage } from './pages/PlaylistDetailPage';
+import { PublicPlaylistPage } from './pages/PublicPlaylistPage';
 import { YTMusicDetailPage } from './pages/YTMusicDetailPage';
 import { BlendsPage } from './pages/BlendsPage';
 import { BlendDetailPage } from './pages/BlendDetailPage';
@@ -68,6 +69,7 @@ function AppContent() {
             <Route path="/track/:videoId" element={<TrackPage />} />
             <Route path="/playlists" element={<PlaylistsPage />} />
             <Route path="/playlist/:id" element={<PlaylistDetailPage />} />
+            <Route path="/public/playlist/:id" element={<PublicPlaylistPage />} />
             <Route path="/ytmusic/:type/:id" element={<YTMusicDetailPage />} />
             <Route path="/blends" element={<BlendsPage />} />
             <Route path="/blends/:id" element={<BlendDetailPage />} />

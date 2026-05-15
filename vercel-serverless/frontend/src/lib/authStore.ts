@@ -113,10 +113,20 @@ export const api = {
     return response;
   },
 
-  async register(email: string, password: string, otp: string, name?: string) {
+  async register(
+    email: string,
+    password: string,
+    otp: string,
+    name?: string,
+    preferences?: {
+      favoriteLanguage?: string;
+      favoriteArtists?: string[];
+      favoriteGenres?: string[];
+    }
+  ) {
     const response = await this.fetch('/auth/register', {
       method: 'POST',
-      body: JSON.stringify({ email, password, otp, name })
+      body: JSON.stringify({ email, password, otp, name, preferences })
     });
 
     const data = await response.json();

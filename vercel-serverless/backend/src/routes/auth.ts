@@ -9,6 +9,7 @@ import { prisma } from '../lib/prisma.js';
 import { hashPassword, verifyPassword } from '../lib/auth.js';
 import { registerSchema, loginSchema, updateProfileSchema, changePasswordSchema, sendOtpSchema, resetPasswordSchema } from '../lib/validation.js';
 import { storeOtp, sendOtpEmail, verifyOtp, checkResendCooldown, EmailError } from '../lib/email.js';
+import { buildOnboardingSeedTracks } from '../lib/onboarding.js';
 
 const registerWithOtpSchema = registerSchema.extend({
   otp: z.string().length(6, 'OTP must be 6 digits').regex(/^\d{6}$/, 'OTP must be numeric'),
@@ -74,6 +75,25 @@ export default async function authRoutes(fastify: FastifyInstance) {
           createdAt: true,
         }
       });
+
+      if (body.preferences) {
+        const seedTracks = await buildOnboardingSeedTracks(body.preferences, 20);
+        await prisma.userOnboardingPreferences.create({
+          data: {
+            userId: user.id,
+            favoriteLanguage: body.preferences.favoriteLanguage?.trim() || null,
+            favoriteArtists: body.preferences.favoriteArtists?.map(a => a.trim()).filter(Boolean) || [],
+            favoriteGenres: body.preferences.favoriteGenres?.map(g => g.trim()).filter(Boolean) || [],
+            seedTracks: seedTracks.map(track => ({
+              videoId: track.videoId,
+              title: track.title,
+              artist: track.artist,
+              thumbnail: track.thumbnail,
+              duration: track.duration
+            }))
+          }
+        });
+      }
 
       // Generate JWT
       const token = fastify.jwt.sign({

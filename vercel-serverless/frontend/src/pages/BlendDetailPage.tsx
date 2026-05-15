@@ -11,7 +11,7 @@ export function BlendDetailPage() {
   const navigate = useNavigate();
   const { user } = useAuth();
   const { currentBlend, getBlend, regenerateBlend, leaveBlend } = useBlend();
-  const { play, addToQueue, currentTrack, state, like, unlike, isLiked } = usePlayer();
+  const { play, replaceQueue, currentTrack, state, like, unlike, isLiked } = usePlayer();
   const [loading, setLoading] = useState(true);
   const [regenerating, setRegenerating] = useState(false);
   const [showLeaveModal, setShowLeaveModal] = useState(false);
@@ -74,16 +74,14 @@ export function BlendDetailPage() {
       duration: firstTrack.duration || 0
     });
 
-    for (let i = 1; i < currentBlend.tracks.length; i++) {
-      const track = currentBlend.tracks[i];
-      await addToQueue({
-        videoId: track.trackId,
-        title: track.title,
-        artist: track.artist,
-        thumbnail: track.thumbnail || '',
-        duration: track.duration || 0
-      });
-    }
+    const remainder = currentBlend.tracks.slice(1).map(track => ({
+      videoId: track.trackId,
+      title: track.title,
+      artist: track.artist,
+      thumbnail: track.thumbnail || '',
+      duration: track.duration || 0
+    }));
+    await replaceQueue(remainder, `blend:${currentBlend.id}`);
   };
 
   const handlePlayTrack = async (track: BlendTrack, index: number) => {
@@ -97,16 +95,14 @@ export function BlendDetailPage() {
       duration: track.duration || 0
     });
 
-    for (let i = index + 1; i < currentBlend.tracks.length; i++) {
-      const t = currentBlend.tracks[i];
-      await addToQueue({
-        videoId: t.trackId,
-        title: t.title,
-        artist: t.artist,
-        thumbnail: t.thumbnail || '',
-        duration: t.duration || 0
-      });
-    }
+    const remainder = currentBlend.tracks.slice(index + 1).map(t => ({
+      videoId: t.trackId,
+      title: t.title,
+      artist: t.artist,
+      thumbnail: t.thumbnail || '',
+      duration: t.duration || 0
+    }));
+    await replaceQueue(remainder, `blend:${currentBlend.id}:${track.trackId}`);
   };
 
   const handleToggleLike = async (e: React.MouseEvent, track: BlendTrack) => {

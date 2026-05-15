@@ -10,7 +10,7 @@ import { AddToPlaylistDropdown } from '../components/AddToPlaylistDropdown';
 export function LikedPage() {
   const [likedSongs, setLikedSongs] = useState<Track[]>([]);
   const [loading, setLoading] = useState(true);
-  const { play, addToQueue, clearQueue, currentTrack, state, togglePlay } = usePlayer();
+  const { play, appendQueue, replaceQueue, currentTrack, state, togglePlay } = usePlayer();
   const { isAuthenticated } = useAuth();
 
   useEffect(() => {
@@ -51,32 +51,21 @@ export function LikedPage() {
     // 1. Clear the queue
     // 2. Add all songs from this track onwards to queue
     // 3. Play the clicked track
-    await clearQueue();
-    
     const clickedIndex = likedSongs.findIndex(t => t.videoId === track.videoId);
-    const songsToQueue = likedSongs.slice(clickedIndex);
-    
-    for (const song of songsToQueue) {
-      await addToQueue(song);
-    }
-    
+    const songsToQueue = likedSongs.slice(clickedIndex + 1);
+    await replaceQueue(songsToQueue, `liked:${track.videoId}`);
     await play(track);
   };
 
   const handleAddToQueue = async (e: React.MouseEvent, track: Track) => {
     e.stopPropagation();
-    await addToQueue(track);
+    await appendQueue([track]);
   };
 
   const handlePlayAll = async () => {
     if (likedSongs.length === 0) return;
-    
-    // Clear queue and add all liked songs in order
-    await clearQueue();
-    for (const track of likedSongs) {
-      await addToQueue(track);
-    }
-    // Play first song (which will auto-remove from queue and continue)
+
+    await replaceQueue(likedSongs.slice(1), 'liked:all');
     await play(likedSongs[0]);
   };
 

@@ -19,7 +19,7 @@ export function HomePage() {
   const [popularTracks, setPopularTracks] = useState<Track[]>([]);
   const [discoveredTracks, setDiscoveredTracks] = useState<Track[]>([]);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [recStatus, setRecStatus] = useState<'idle' | 'loading' | 'success' | 'empty'>('idle');
   const [showMoreRecent, setShowMoreRecent] = useState(false);
   const [showMoreFavorites, setShowMoreFavorites] = useState(false);
   const [showMoreDiscovered, setShowMoreDiscovered] = useState(false);
@@ -32,55 +32,42 @@ export function HomePage() {
   };
 
   const handlePlayArtist = (artist: TopArtist) => {
-    const { play, addToQueue } = usePlayer.getState();
+    const { play, appendQueue } = usePlayer.getState();
     if (artist.tracks.length > 0) {
       play(artist.tracks[0]);
-      artist.tracks.slice(1).forEach(t => addToQueue(t));
+      appendQueue(artist.tracks.slice(1));
     }
   };
 
   const handlePlayArtistShuffled = (artist: TopArtist) => {
-    const { play, addToQueue } = usePlayer.getState();
+    const { play, appendQueue } = usePlayer.getState();
     const shuffled = [...artist.tracks].sort(() => Math.random() - 0.5);
     if (shuffled.length > 0) {
       play(shuffled[0]);
-      shuffled.slice(1).forEach(t => addToQueue(t));
+      appendQueue(shuffled.slice(1));
     }
   };
 
   const loadRecommendations = async () => {
     setLoading(true);
-    // Never set error — graceful degradation only
-    setError(null);
+    setRecStatus('loading');
     
     try {
-      if (isAuthenticated) {
-        const data = await getRecommendations();
-        setRecommendations(data);
-      } else {
-        const data = await getGuestRecommendations();
-        setRecommendations(data);
-      }
-    } catch (err) {
-      // Log but never show error to user — just show empty state
-      console.warn('Recommendations unavailable:', err);
-      setRecommendations({
-        recentlyPlayed: [],
-        mostPlayed: [],
-        topArtists: []
-      });
-    }
-
-    // Load discovered tracks independently so a recommendation failure
-    // doesn't block discovery
-    try {
+      const data = isAuthenticated ? await getRecommendations() : await getGuestRecommendations();
+      setRecommendations(data);
+      const hasRecData = data.recentlyPlayed.length > 0 || data.mostPlayed.length > 0 || data.topArtists.length > 0;
+      setRecStatus(hasRecData ? 'success' : 'empty');
+      
+      // Load discovered tracks from IndexedDB
       const discovered = await cache.getDiscoveredTracks();
       setDiscoveredTracks(discovered);
-    } catch {
-      setDiscoveredTracks([]);
+    } catch (err) {
+      console.error('Failed to load recommendations:', err);
+      setRecStatus('empty');
+      setRecommendations({ recentlyPlayed: [], mostPlayed: [], topArtists: [] });
+    } finally {
+      setLoading(false);
     }
-
-    setLoading(false);
   };
 
   const loadPopularTracks = async () => {
@@ -254,10 +241,8 @@ export function HomePage() {
         </div>
       )}
 
-      {/* Error state removed — graceful empty state handles all cases */}
-
       {/* Recommendations */}
-      {!loading && !error && recommendations && (
+      {!loading && recommendations && (
         <div className="space-y-6 sm:space-y-8">
           {/* Discovered Tracks - For You (from search history) */}
           {discoveredTracks.length > 0 && (
@@ -463,9 +448,7 @@ export function HomePage() {
           )}
 
           {/* Empty State */}
-          {recommendations.recentlyPlayed.length === 0 && 
-           recommendations.mostPlayed.length === 0 && 
-           recommendations.topArtists.length === 0 && (
+          {recStatus === 'empty' && (
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}

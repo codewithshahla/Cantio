@@ -16,12 +16,53 @@ const getApiBase = () => {
 
 const API_BASE = getApiBase();
 
+const QUEUE_SESSION_TTL_MS = 30000;
+const queueSessionRegistry = new Map<string, number>();
+
+function isDuplicateSession(sessionId: string): boolean {
+  const now = Date.now();
+  for (const [key, timestamp] of queueSessionRegistry.entries()) {
+    if (now - timestamp > QUEUE_SESSION_TTL_MS) {
+      queueSessionRegistry.delete(key);
+    }
+  }
+  const last = queueSessionRegistry.get(sessionId);
+  if (last && now - last <= QUEUE_SESSION_TTL_MS) {
+    return true;
+  }
+  queueSessionRegistry.set(sessionId, now);
+  return false;
+}
+
+function normalizeTitleKey(title?: string): string {
+  const base = title?.toLowerCase() || '';
+  return base
+    .replace(/\([^)]*\)|\[[^\]]*\]|\{[^}]*\}/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function dedupeTracks(tracks: Track[], existingIds: Set<string>, existingKeys: Set<string>): Track[] {
+  const deduped: Track[] = [];
+  for (const track of tracks) {
+    if (!track?.videoId) continue;
+    if (existingIds.has(track.videoId)) continue;
+    const key = normalizeTitleKey(track.title);
+    if (existingKeys.has(key)) continue;
+    existingIds.add(track.videoId);
+    existingKeys.add(key);
+    deduped.push(track);
+  }
+  return deduped;
+}
+
 // Player state flags
 let nextTransitionInProgress = false;
 let nextTransitionReleaseTimer: number | null = null;
 let playerStoreInitialized = false;
 let playerStoreInitPromise: Promise<void> | null = null;
 let playerInstanceInitialized = false;
+let sleepTimerId: number | null = null;
 
 const isStandalonePwa = () => {
   if (typeof window === 'undefined') return false;
@@ -132,6 +173,7 @@ interface PlayerStore {
   duration: number;
   error: string | null;
   isPlayerVisible: boolean;
+  sleepTimer: { mode: 'duration' | 'end'; endsAt?: number } | null;
   
   // YouTube IFrame player instance
   ytPlayer: any | null;
@@ -151,9 +193,15 @@ interface PlayerStore {
   seek: (seconds: number) => void;
   setVolume: (volume: number) => void;
   addToQueue: (track: Track) => Promise<void>;
+  appendQueue: (tracks: Track[], sessionId?: string) => Promise<void>;
+  replaceQueue: (tracks: Track[], sessionId?: string) => Promise<void>;
+  enqueueRecommendations: (tracks: Track[], options?: { sessionId?: string; mode?: 'append' | 'replace' }) => Promise<void>;
   removeFromQueue: (index: number) => Promise<void>;
-  rearrangeQueue: (fromIndex: number, toIndex: number) => void;
+  reorderQueue: (fromIndex: number, toIndex: number) => void;
   clearQueue: () => Promise<void>;
+  getRelatedTracks: (videoId: string, limit?: number) => Promise<Track[]>;
+  setSleepTimer: (options: { mode: 'duration'; durationMs: number } | { mode: 'end' }) => void;
+  clearSleepTimer: () => void;
   like: (track: Track) => Promise<void>;
   unlike: (videoId: string) => Promise<void>;
   isLiked: (videoId: string) => boolean;
@@ -174,6 +222,7 @@ export const usePlayer = create<PlayerStore>((set, get) => ({
   duration: 0,
   error: null,
   isPlayerVisible: false,
+  sleepTimer: null,
   ytPlayer: null,
   ytPlayerReady: false,
 
@@ -438,19 +487,18 @@ export const usePlayer = create<PlayerStore>((set, get) => ({
           } else if (event.data === YT.PlayerState.ENDED) {
             console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
             console.log('✅ TRACK COMPLETED:', get().currentTrack?.title);
-
-            // Check sleep timer — if set to "end of song", pause here
-            import('../lib/sleepTimer').then(({ useSleepTimer }) => {
-              const shouldPause = useSleepTimer.getState().onTrackEnd();
-              if (shouldPause) {
-                console.log('💤 Sleep timer: pausing at end of song');
-                set({ state: 'paused' });
-                return;
-              }
-              console.log('⏭️  Playing next track from queue...');
-              console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-              get().next();
-            });
+            if (get().sleepTimer?.mode === 'end') {
+              console.log('🛌 Sleep timer: stopping after current track');
+              get().clearSleepTimer();
+              const { ytPlayer } = get();
+              if (ytPlayer) ytPlayer.stopVideo();
+              set({ state: 'idle', currentTrack: null, progress: 0, duration: 0 });
+              mediaSessionManager.updatePlaybackState('none');
+              return;
+            }
+            console.log('⏭️  Playing next track from queue...');
+            console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+            get().next();
           }
         },
         onError: (event: any) => {
@@ -912,10 +960,73 @@ export const usePlayer = create<PlayerStore>((set, get) => ({
   },
 
   addToQueue: async (track: Track) => {
-    const { queue } = get();
-    const newQueue = [...queue, track];
+    await get().appendQueue([track]);
+  },
+
+  appendQueue: async (tracks: Track[], sessionId?: string) => {
+    if (sessionId && isDuplicateSession(sessionId)) return;
+
+    const { queue, currentTrack } = get();
+    const { manualQueue } = useQueue.getState();
+
+    const existingIds = new Set<string>([currentTrack?.videoId || '']);
+    const existingKeys = new Set<string>();
+    const addKey = (track?: Track | null) => {
+      if (!track) return;
+      const key = normalizeTitleKey(track.title);
+      if (key) existingKeys.add(key);
+    };
+
+    addKey(currentTrack);
+    queue.forEach(t => {
+      existingIds.add(t.videoId);
+      addKey(t);
+    });
+    manualQueue.forEach(t => {
+      existingIds.add(t.videoId);
+      addKey(t);
+    });
+
+    const deduped = dedupeTracks(tracks, existingIds, existingKeys);
+    if (deduped.length === 0) return;
+
+    const newQueue = [...queue, ...deduped];
     set({ queue: newQueue });
-    await cache.addToQueue(track);
+    await cache.appendQueue(deduped);
+  },
+
+  replaceQueue: async (tracks: Track[], sessionId?: string) => {
+    if (sessionId && isDuplicateSession(sessionId)) return;
+
+    const { currentTrack } = get();
+    const { manualQueue } = useQueue.getState();
+
+    const existingIds = new Set<string>([currentTrack?.videoId || '']);
+    const existingKeys = new Set<string>();
+    const addKey = (track?: Track | null) => {
+      if (!track) return;
+      const key = normalizeTitleKey(track.title);
+      if (key) existingKeys.add(key);
+    };
+
+    addKey(currentTrack);
+    manualQueue.forEach(t => {
+      existingIds.add(t.videoId);
+      addKey(t);
+    });
+
+    const deduped = dedupeTracks(tracks, existingIds, existingKeys);
+    set({ queue: deduped });
+    await cache.setQueue(deduped);
+  },
+
+  enqueueRecommendations: async (tracks: Track[], options?: { sessionId?: string; mode?: 'append' | 'replace' }) => {
+    const mode = options?.mode || 'append';
+    if (mode === 'replace') {
+      await get().replaceQueue(tracks, options?.sessionId);
+      return;
+    }
+    await get().appendQueue(tracks, options?.sessionId);
   },
 
   removeFromQueue: async (index: number) => {
@@ -925,7 +1036,7 @@ export const usePlayer = create<PlayerStore>((set, get) => ({
     await cache.removeFromQueue(index);
   },
 
-  rearrangeQueue: (fromIndex: number, toIndex: number) => {
+  reorderQueue: (fromIndex: number, toIndex: number) => {
     const { queue } = get();
     if (fromIndex === toIndex) return;
     const newQueue = [...queue];
@@ -936,8 +1047,49 @@ export const usePlayer = create<PlayerStore>((set, get) => ({
   },
 
   clearQueue: async () => {
-    set({ queue: [] });
-    await cache.clearQueue();
+    await get().replaceQueue([]);
+  },
+
+  getRelatedTracks: async (videoId: string, limit: number = 20) => {
+    const params = new URLSearchParams({ limit: limit.toString() });
+    const response = await fetch(`${API_BASE}/track/${videoId}/related?${params}`);
+    if (!response.ok) return [];
+    const data = await response.json();
+    return (data.tracks || []) as Track[];
+  },
+
+  setSleepTimer: (options) => {
+    if (sleepTimerId !== null) {
+      window.clearTimeout(sleepTimerId);
+      sleepTimerId = null;
+    }
+
+    if (options.mode === 'end') {
+      set({ sleepTimer: { mode: 'end' } });
+      return;
+    }
+
+    const durationMs = Math.max(0, options.durationMs);
+    const endsAt = Date.now() + durationMs;
+    sleepTimerId = window.setTimeout(() => {
+      const { ytPlayer, state } = get();
+      if (ytPlayer && (state === 'playing' || state === 'paused')) {
+        ytPlayer.pauseVideo();
+        set({ state: 'paused' });
+      }
+      set({ sleepTimer: null });
+      sleepTimerId = null;
+    }, durationMs);
+
+    set({ sleepTimer: { mode: 'duration', endsAt } });
+  },
+
+  clearSleepTimer: () => {
+    if (sleepTimerId !== null) {
+      window.clearTimeout(sleepTimerId);
+      sleepTimerId = null;
+    }
+    set({ sleepTimer: null });
   },
 
   like: async (track: Track) => {

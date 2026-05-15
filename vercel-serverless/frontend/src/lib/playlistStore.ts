@@ -38,6 +38,7 @@ export interface PlaylistTrack {
 
 interface PlaylistState {
   playlists: Playlist[];
+  publicPlaylists: Playlist[];
   currentPlaylist: Playlist | null;
   loading: boolean;
   lastFetch: number | null;
@@ -61,11 +62,14 @@ interface PlaylistState {
   removeTrackFromPlaylist: (playlistId: string, trackId: string) => Promise<void>;
   updatePlaylist: (id: string, data: { name?: string; description?: string; isPublic?: boolean }) => Promise<void>;
   deletePlaylist: (id: string) => Promise<void>;
+  searchPublicPlaylists: (query?: string) => Promise<Playlist[]>;
+  getPublicPlaylist: (id: string) => Promise<Playlist>;
   setCurrentPlaylist: (playlist: Playlist | null) => void;
 }
 
 export const usePlaylist = create<PlaylistState>((set, get) => ({
   playlists: [],
+  publicPlaylists: [],
   currentPlaylist: null,
   loading: false,
   lastFetch: null,
@@ -325,6 +329,23 @@ export const usePlaylist = create<PlaylistState>((set, get) => ({
       set({ playlists });
       throw new Error('Failed to delete playlist');
     }
+  },
+
+  searchPublicPlaylists: async (query?: string) => {
+    const params = new URLSearchParams();
+    if (query) params.set('q', query);
+    const response = await fetch(`${API_URL}/playlists/public?${params.toString()}`);
+    if (!response.ok) throw new Error('Failed to search public playlists');
+    const data = await response.json();
+    set({ publicPlaylists: data.playlists || [] });
+    return data.playlists || [];
+  },
+
+  getPublicPlaylist: async (id: string) => {
+    const response = await fetch(`${API_URL}/playlists/public/${id}`);
+    if (!response.ok) throw new Error('Failed to fetch public playlist');
+    const data = await response.json();
+    return data.playlist;
   },
 
   setCurrentPlaylist: (playlist: Playlist | null) => {

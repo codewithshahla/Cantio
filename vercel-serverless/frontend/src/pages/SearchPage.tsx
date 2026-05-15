@@ -5,6 +5,7 @@ import { Search as SearchIcon, Heart, Plus, ListMusic, Disc3, Mic2, PlayCircle }
 import { usePlayer } from '../services/player';
 import { Track } from '../lib/cache';
 import { AddToPlaylistDropdown } from '../components/AddToPlaylistDropdown';
+import { usePlaylist } from '../lib/playlistStore';
 
 type SearchFilter = 'songs' | 'playlists' | 'albums' | 'artists';
 
@@ -52,7 +53,8 @@ export function SearchPage() {
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [currentLimit, setCurrentLimit] = useState(10);
-  const { play, addToQueue, currentTrack, state, like, unlike, isLiked } = usePlayer();
+  const { play, appendQueue, enqueueRecommendations, getRelatedTracks, currentTrack, state, like, unlike, isLiked } = usePlayer();
+  const { publicPlaylists, searchPublicPlaylists } = usePlaylist();
 
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -69,6 +71,7 @@ export function SearchPage() {
         setMusicResults(results);
         setSongResults([]);
       }
+      searchPublicPlaylists(query.trim()).catch(() => {});
     } catch (error) {
       console.error('Search failed:', error);
       setSongResults([]);
@@ -101,63 +104,20 @@ export function SearchPage() {
     }
   };
 
-  const handlePlay = async (track: Track, _index: number) => {
-    // Play the selected track immediately
+  const handlePlay = async (track: Track, index: number) => {
     await play(track);
+    const sessionId = `related:${track.videoId}`;
+    const related = await getRelatedTracks(track.videoId, 40);
+    const sameArtist = related.filter(r => r.artist === track.artist);
+    const others = related.filter(r => r.artist !== track.artist);
+    const combined = [...sameArtist, ...others].slice(0, 20);
 
-    // F1: Smart Auto Queue — fetch related tracks in the background
-    // instead of blindly queueing remaining search results
-    try {
-      const apiBase = import.meta.env.VITE_API_URL
-        ? `${import.meta.env.VITE_API_URL}/api`
-        : '/api';
-      const resp = await fetch(`${apiBase}/related/${track.videoId}?limit=20`);
-      if (resp.ok) {
-        const data = await resp.json();
-        const related: Track[] = (data.tracks || []).map((t: any) => ({
-          videoId: t.videoId,
-          title: t.title,
-          artist: t.artist,
-          duration: t.duration || 0,
-          thumbnail: t.thumbnail || '',
-        }));
-
-        if (related.length > 0) {
-          // F2: Dedup against existing queue before adding
-          const { queue: currentQueue } = usePlayer.getState();
-          const existingIds = new Set([
-            track.videoId,
-            ...currentQueue.map((t: Track) => t.videoId),
-          ]);
-          const deduped = related.filter(t => !existingIds.has(t.videoId));
-
-          for (const t of deduped) {
-            await addToQueue(t);
-          }
-          console.log(`🎵 Smart queue: added ${deduped.length} related tracks`);
-          return;
-        }
-      }
-    } catch (err) {
-      console.warn('Smart queue fetch failed, falling back to search results:', err);
-    }
-
-    // Fallback: enqueue remaining search results (deduped)
-    const { queue: currentQueue } = usePlayer.getState();
-    const existingIds = new Set([
-      track.videoId,
-      ...currentQueue.map((t: Track) => t.videoId),
-    ]);
-    const remaining = songResults
-      .filter(s => s.videoId !== track.videoId && !existingIds.has(s.videoId));
-    for (const s of remaining) {
-      await addToQueue(s);
-    }
+    await enqueueRecommendations(combined, { sessionId, mode: 'replace' });
   };
 
   const handleAddToQueue = async (e: React.MouseEvent, track: Track) => {
     e.stopPropagation();
-    await addToQueue(track);
+    await appendQueue([track]);
   };
 
   const handleToggleLike = async (e: React.MouseEvent, track: Track) => {
@@ -306,6 +266,34 @@ export function SearchPage() {
               </motion.button>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Public Playlists Results */}
+      {!loading && query.trim() && publicPlaylists.length > 0 && (
+        <div>
+          <h2 className="text-xl md:text-2xl font-bold mb-4">Public Playlists</h2>
+          <div className="space-y-2">
+            {publicPlaylists.map((playlist) => (
+              <motion.button
+                key={playlist.id}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                onClick={() => navigate(`/public/playlist/${playlist.id}`)}
+                className="w-full flex items-center gap-3 px-3 py-3 rounded-lg hover:bg-white/10 active:bg-white/15 transition text-left"
+              >
+                <div className="w-12 h-12 rounded-lg bg-white/10 flex items-center justify-center flex-shrink-0">
+                  <PlayCircle size={18} className="text-white/70" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium truncate">{playlist.name}</p>
+                  <p className="text-xs text-gray-400 truncate">
+                    {playlist.user?.name || playlist.user?.username || 'Creator'} • {playlist._count?.tracks || 0} tracks
+                  </p>
+                </div>
+              </motion.button>
+            ))}
+          </div>
         </div>
       )}
 

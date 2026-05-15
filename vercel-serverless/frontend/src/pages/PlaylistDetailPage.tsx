@@ -1,18 +1,18 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Music, Play, Trash2, ChevronLeft, Loader2, Heart } from 'lucide-react';
+import { Music, Play, Trash2, ChevronLeft, Loader2, Heart, Share2 } from 'lucide-react';
 import { usePlaylist, PlaylistTrack } from '../lib/playlistStore';
 import { usePlayer } from '../services/player';
-import SharePlaylist from '../components/SharePlaylist';
 
 export function PlaylistDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { currentPlaylist, getPlaylist, removeTrackFromPlaylist } = usePlaylist();
-  const { play, addToQueue, currentTrack, state, like, unlike, isLiked } = usePlayer();
+  const { currentPlaylist, getPlaylist, removeTrackFromPlaylist, updatePlaylist } = usePlaylist();
+  const { play, replaceQueue, currentTrack, state, like, unlike, isLiked } = usePlayer();
   const [loading, setLoading] = useState(true);
   const [removing, setRemoving] = useState<string | null>(null);
+  const [updatingPublic, setUpdatingPublic] = useState(false);
 
   useEffect(() => {
     if (id) {
@@ -46,17 +46,14 @@ export function PlaylistDetailPage() {
       duration: firstTrack.duration || 0
     });
 
-    // Add rest to queue
-    for (let i = 1; i < currentPlaylist.tracks.length; i++) {
-      const track = currentPlaylist.tracks[i];
-      await addToQueue({
-        videoId: track.trackId,
-        title: track.title,
-        artist: track.artist,
-        thumbnail: track.thumbnail || '',
-        duration: track.duration || 0
-      });
-    }
+    const remainder = currentPlaylist.tracks.slice(1).map(track => ({
+      videoId: track.trackId,
+      title: track.title,
+      artist: track.artist,
+      thumbnail: track.thumbnail || '',
+      duration: track.duration || 0
+    }));
+    await replaceQueue(remainder, `playlist:${currentPlaylist.id}`);
   };
 
   const handlePlayTrack = async (track: PlaylistTrack, index: number) => {
@@ -70,17 +67,14 @@ export function PlaylistDetailPage() {
       duration: track.duration || 0
     });
 
-    // Add songs after this one to queue
-    for (let i = index + 1; i < currentPlaylist.tracks.length; i++) {
-      const t = currentPlaylist.tracks[i];
-      await addToQueue({
-        videoId: t.trackId,
-        title: t.title,
-        artist: t.artist,
-        thumbnail: t.thumbnail || '',
-        duration: t.duration || 0
-      });
-    }
+    const remainder = currentPlaylist.tracks.slice(index + 1).map(t => ({
+      videoId: t.trackId,
+      title: t.title,
+      artist: t.artist,
+      thumbnail: t.thumbnail || '',
+      duration: t.duration || 0
+    }));
+    await replaceQueue(remainder, `playlist:${currentPlaylist.id}:${track.trackId}`);
   };
 
   const handleRemoveTrack = async (trackId: string) => {
@@ -93,6 +87,40 @@ export function PlaylistDetailPage() {
       alert(error.message || 'Failed to remove track');
     } finally {
       setRemoving(null);
+    }
+  };
+
+  const handleTogglePublic = async () => {
+    if (!currentPlaylist?.id) return;
+    setUpdatingPublic(true);
+    try {
+      await updatePlaylist(currentPlaylist.id, { isPublic: !currentPlaylist.isPublic });
+      await loadPlaylist();
+    } catch (error: any) {
+      alert(error.message || 'Failed to update playlist');
+    } finally {
+      setUpdatingPublic(false);
+    }
+  };
+
+  const handleShare = async () => {
+    if (!currentPlaylist?.isPublic) return;
+    const shareUrl = `${window.location.origin}/public/playlist/${currentPlaylist.id}`;
+    try {
+      if (navigator.share) {
+        await navigator.share({
+          title: currentPlaylist.name,
+          text: `Listen to "${currentPlaylist.name}" on Cantio`,
+          url: shareUrl
+        });
+      } else {
+        await navigator.clipboard.writeText(shareUrl);
+        alert('Link copied to clipboard!');
+      }
+    } catch (error) {
+      if (error instanceof Error && error.name !== 'AbortError') {
+        console.error('Share failed:', error);
+      }
     }
   };
 
@@ -162,9 +190,9 @@ export function PlaylistDetailPage() {
         </div>
       </div>
 
-      {/* Play Button */}
+      {/* Actions */}
       {tracks.length > 0 && (
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-4 flex-wrap">
           <motion.button
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
@@ -173,13 +201,21 @@ export function PlaylistDetailPage() {
           >
             <Play size={24} fill="black" className="text-black ml-1" />
           </motion.button>
-          {currentPlaylist && id && (
-            <SharePlaylist
-              playlistId={id}
-              playlistName={currentPlaylist.name}
-              isPublic={currentPlaylist.isPublic}
-              shareSlug={(currentPlaylist as any).shareSlug}
-            />
+          <button
+            onClick={handleTogglePublic}
+            disabled={updatingPublic}
+            className="px-4 py-2 rounded-full text-sm font-semibold border border-white/10 hover:bg-white/10 transition-colors disabled:opacity-50"
+          >
+            {currentPlaylist.isPublic ? 'Public' : 'Private'}
+          </button>
+          {currentPlaylist.isPublic && (
+            <button
+              onClick={handleShare}
+              className="px-4 py-2 rounded-full text-sm font-semibold bg-white/10 hover:bg-white/20 transition-colors flex items-center gap-2"
+            >
+              <Share2 size={16} />
+              Share
+            </button>
           )}
         </div>
       )}

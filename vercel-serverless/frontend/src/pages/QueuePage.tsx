@@ -8,7 +8,7 @@ const SCROLL_ZONE = 120; // px from viewport edge to trigger auto-scroll
 const MAX_SPEED = 16;    // max px scrolled per animation frame
 
 export function QueuePage() {
-  const { queue, currentTrack, play, removeFromQueue, clearQueue, rearrangeQueue, state } = usePlayer();
+  const { queue, currentTrack, play, removeFromQueue, clearQueue, reorderQueue, state } = usePlayer();
 
   const dragIndexRef = useRef<number | null>(null);
   const dragClientYRef = useRef<number>(0);
@@ -71,7 +71,7 @@ export function QueuePage() {
     stopAutoScroll();
     const fromIndex = dragIndexRef.current;
     if (fromIndex !== null && fromIndex !== toIndex) {
-      rearrangeQueue(fromIndex, toIndex);
+      reorderQueue(fromIndex, toIndex);
     }
     dragIndexRef.current = null;
     setDragOverIndex(null);

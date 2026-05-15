@@ -41,7 +41,7 @@ export function YTMusicDetailPage() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savedPlaylistId, setSavedPlaylistId] = useState<string | null>(null);
 
-  const { play, addToQueue, currentTrack, state: playerState, like, unlike, isLiked } = usePlayer();
+  const { play, appendQueue, replaceQueue, currentTrack, state: playerState, like, unlike, isLiked } = usePlayer();
   const { createPlaylist, addTracksToPlaylist, fetchPlaylists } = usePlaylist();
 
   useEffect(() => {
@@ -76,12 +76,12 @@ export function YTMusicDetailPage() {
   const handlePlayAll = async () => {
     if (tracks.length === 0) return;
     await play(tracks[0]);
-    for (let i = 1; i < tracks.length; i++) await addToQueue(tracks[i]);
+    await replaceQueue(tracks.slice(1), `ytmusic:${type}:${id}:all`);
   };
 
   const handlePlayTrack = async (track: Track, index: number) => {
     await play(track);
-    for (let i = index + 1; i < tracks.length; i++) await addToQueue(tracks[i]);
+    await replaceQueue(tracks.slice(index + 1), `ytmusic:${type}:${id}:${track.videoId}`);
   };
 
   const handleToggleLike = async (e: React.MouseEvent, track: Track) => {
@@ -92,7 +92,7 @@ export function YTMusicDetailPage() {
 
   const handleAddToQueue = async (e: React.MouseEvent, track: Track) => {
     e.stopPropagation();
-    await addToQueue(track);
+    await appendQueue([track]);
   };
 
   const openSaveModal = () => {

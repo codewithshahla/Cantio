@@ -241,6 +241,22 @@ async function initializeApp() {
     }
   });
 
+  // Related tracks endpoint for smart queue
+  app.get('/api/track/:id/related', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const { limit } = request.query as { limit?: string };
+    const parsedLimit = Math.min(Math.max(parseInt(limit || '20', 10) || 20, 5), 30);
+
+    try {
+      const tracks = await getRelatedTracks(id, parsedLimit);
+      return { tracks };
+    } catch (error: any) {
+      request.log.error(`Failed to fetch related tracks for ${id}:`, error);
+      reply.code(500);
+      return { error: 'Failed to fetch related tracks', message: error.message };
+    }
+  });
+
   // Track streaming endpoint - iframe only
   app.get('/api/track/:id/stream', async (request, reply) => {
     const { id } = request.params as { id: string };

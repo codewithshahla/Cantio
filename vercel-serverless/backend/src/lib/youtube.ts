@@ -196,6 +196,31 @@ function getThumbnailUrl(thumbnails: any): string {
   return '';
 }
 
+function normalizeTitleKey(title?: string): string {
+  const base = title?.toLowerCase() || '';
+  return base
+    .replace(/\([^)]*\)|\[[^\]]*\]|\{[^}]*\}/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function extractItemsFromSource(source: any): any[] {
+  if (!source) return [];
+  const buckets: any[] = [];
+  if (Array.isArray(source)) buckets.push(source);
+  if (Array.isArray(source.items)) buckets.push(source.items);
+  if (Array.isArray(source.contents)) buckets.push(source.contents);
+  if (Array.isArray(source.playlist?.items)) buckets.push(source.playlist.items);
+  if (Array.isArray(source.playlist?.contents)) buckets.push(source.playlist.contents);
+  if (Array.isArray(source.tabs)) {
+    buckets.push(source.tabs.flatMap((tab: any) => tab?.content?.contents || tab?.contents || []));
+  }
+  if (Array.isArray(source.sections)) {
+    buckets.push(source.sections.flatMap((section: any) => section?.contents || []));
+  }
+  return buckets.flat();
+}
+
 /** Safely extract a plain string from a youtubei.js Text / string value */
 function getText(t: any): string {
   if (!t) return '';
@@ -204,6 +229,114 @@ function getText(t: any): string {
   if (Array.isArray(t.runs)) return t.runs.map((r: any) => r?.text || '').join('');
   const s = String(t);
   return s === '[object Object]' ? '' : s;
+}
+
+export async function getRelatedTracks(videoId: string, limit: number = 20): Promise<VideoResult[]> {
+  const yt = await getYouTube();
+  const info: any = await (yt as any).getInfo(videoId);
+
+  const relatedItems: any[] = info?.related_videos
+    || info?.watch_next_feed?.items
+    || [];
+
+  const results: VideoResult[] = [];
+  const seen = new Set<string>();
+  const seenTitles = new Set<string>();
+  const MIN_DURATION = 60;
+  const MAX_DURATION = 900;
+
+  const appendFromItems = (items: any[]) => {
+    for (const item of items) {
+      if (results.length >= limit) break;
+      const id: string = item?.id || item?.video_id || '';
+      if (!id || id === videoId || seen.has(id)) continue;
+      const title = getText(item?.title);
+      if (!title) continue;
+      const duration = item?.duration?.seconds || item?.length_seconds || 0;
+      if (duration && (duration < MIN_DURATION || duration > MAX_DURATION)) continue;
+      const artist = item?.author?.name
+        || item?.uploader?.name
+        || item?.channel?.name
+        || 'Unknown';
+      const thumbnail = getThumbnailUrl(item?.thumbnail?.contents || item?.thumbnail)
+        || `https://i.ytimg.com/vi/${id}/hqdefault.jpg`;
+
+      const titleKey = normalizeTitleKey(title);
+      if (!titleKey || seenTitles.has(titleKey)) continue;
+      seen.add(id);
+      seenTitles.add(titleKey);
+      results.push({
+        videoId: id,
+        title,
+        artist,
+        duration,
+        thumbnail
+      });
+    }
+  };
+
+  appendFromItems(relatedItems);
+
+  if (results.length < limit) {
+    try {
+      let feed = info?.watch_next_feed;
+      if (typeof info?.getWatchNext === 'function') {
+        feed = await info.getWatchNext();
+      } else if (typeof info?.getWatchNextContinuation === 'function') {
+        feed = await info.getWatchNextContinuation();
+      }
+
+      let current = feed;
+      let loops = 0;
+      while (current && results.length < limit && loops < 3) {
+        const items = extractItemsFromSource(current);
+        appendFromItems(items);
+
+        if (!current?.has_continuation || typeof current.getContinuation !== 'function') break;
+        current = await current.getContinuation();
+        loops += 1;
+      }
+    } catch (_) {
+      // ignore watch-next continuation errors
+    }
+  }
+
+  if (results.length < limit) {
+    try {
+      const music = await getYouTubeMusic();
+      const musicApi = (music as any).music || music;
+      const candidates = [
+        musicApi?.getWatchNext,
+        musicApi?.getUpNext,
+        musicApi?.getRadio
+      ];
+
+      for (const fn of candidates) {
+        if (results.length >= limit) break;
+        if (typeof fn !== 'function') continue;
+        try {
+          const res = await fn.call(musicApi, videoId);
+          const items = extractItemsFromSource(res);
+          appendFromItems(items);
+
+          let current = res;
+          let loops = 0;
+          while (current?.has_continuation && results.length < limit && loops < 3 && typeof current.getContinuation === 'function') {
+            current = await current.getContinuation();
+            const moreItems = extractItemsFromSource(current);
+            appendFromItems(moreItems);
+            loops += 1;
+          }
+        } catch (_) {
+          // ignore and try next candidate
+        }
+      }
+    } catch (_) {
+      // ignore music watch-next errors
+    }
+  }
+
+  return results;
 }
 
 export async function searchMusic(query: string, type: MusicSearchType, limit: number = 20): Promise<MusicSearchResult[]> {
