@@ -2,6 +2,7 @@ import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma.js';
 import { recordPlaySchema } from '../lib/validation.js';
+import { normalizeTrack } from '../lib/youtube.js';
 
 const historyQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(50),
@@ -45,6 +46,23 @@ export default async function historyRoutes(fastify: FastifyInstance) {
     try {
       const body = recordPlaySchema.parse(request.body);
       const userId = (request.user as any).id;
+      const normalized = normalizeTrack({
+        id: body.trackId,
+        title: body.title,
+        author: { name: body.artist },
+        thumbnail: body.thumbnail ? { url: body.thumbnail } : undefined,
+        duration: body.duration ? { seconds: body.duration } : undefined,
+      });
+
+      const isUnknownArtist = !normalized?.artist
+        || normalized.artist.trim().toLowerCase() === 'unknown'
+        || normalized.artist.trim().toLowerCase() === 'unknown artist';
+
+      if (!normalized || isUnknownArtist) {
+        fastify.log.warn({ trackId: body.trackId, title: body.title },
+          '[history] Skipping malformed play history entry');
+        return { skipped: true, reason: 'Malformed track metadata' };
+      }
 
       // Update or create recommendation entry (this is the main aggregate)
       //
@@ -62,13 +80,9 @@ export default async function historyRoutes(fastify: FastifyInstance) {
       // NORMALIZATION GUARD: skip recommendation upsert for tracks with
       // unknown/fallback artist so malformed metadata never corrupts affinity
       // scoring, topArtists, or the forYou diversity pools.
-      const isUnknownArtist = !body.artist
-        || body.artist.trim().toLowerCase() === 'unknown'
-        || body.artist.trim().toLowerCase() === 'unknown artist';
-
-      if (!isUnknownArtist) {
+      {
         const existing = await prisma.recommendation.findUnique({
-          where: { userId_trackId: { userId, trackId: body.trackId } },
+          where: { userId_trackId: { userId, trackId: normalized.videoId } },
           select: { lastPlayedAt: true, score: true },
         });
 
@@ -85,7 +99,7 @@ export default async function historyRoutes(fastify: FastifyInstance) {
 
         await prisma.recommendation.upsert({
           where: {
-            userId_trackId: { userId, trackId: body.trackId }
+            userId_trackId: { userId, trackId: normalized.videoId }
           },
           update: {
             score:        newScore,
@@ -96,31 +110,28 @@ export default async function historyRoutes(fastify: FastifyInstance) {
           },
           create: {
             userId,
-            trackId:      body.trackId,
-            title:        body.title,
-            artist:       body.artist,
-            thumbnail:    body.thumbnail,
-            duration:     body.duration,
+            trackId:      normalized.videoId,
+            title:        normalized.title,
+            artist:       normalized.artist,
+            thumbnail:    normalized.thumbnail,
+            duration:     normalized.duration,
             source:       'play',
             score:        1.0,
             playCount:    1,
             lastPlayedAt: new Date(),
           },
         });
-      } else {
-        fastify.log.warn({ trackId: body.trackId, title: body.title },
-          '[history] Skipping recommendation upsert: unknown artist');
       }
 
       // Create play history entry (keep limited history)
       const play = await prisma.playHistory.create({
         data: {
           userId,
-          trackId: body.trackId,
-          title: body.title,
-          artist: body.artist,
-          thumbnail: body.thumbnail,
-          duration: body.duration,
+          trackId: normalized.videoId,
+          title: normalized.title,
+          artist: normalized.artist,
+          thumbnail: normalized.thumbnail,
+          duration: normalized.duration,
         }
       });
 

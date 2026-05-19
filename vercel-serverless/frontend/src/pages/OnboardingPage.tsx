@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Music, Globe, Mic2, Disc3, ChevronRight, Sparkles, X } from 'lucide-react';
+import { Globe, Mic2, Disc3, ChevronRight, Sparkles, X, Loader2 } from 'lucide-react';
 import { useAuth, api } from '../lib/authStore';
 
 const LANGUAGES = [
@@ -20,6 +20,14 @@ interface OnboardingStep {
   title: string;
   description: string;
   icon: React.ReactNode;
+}
+
+interface ArtistResult {
+  type: 'artist';
+  browseId: string;
+  name: string;
+  thumbnail: string;
+  subscribers?: string;
 }
 
 const STEPS: OnboardingStep[] = [
@@ -46,10 +54,15 @@ export default function OnboardingPage() {
   const [step, setStep] = useState(0);
   const [languages, setLanguages] = useState<string[]>([]);
   const [artists, setArtists] = useState<string[]>([]);
+  const [artistImages, setArtistImages] = useState<Record<string, string>>({});
   const [artistInput, setArtistInput] = useState('');
+  const [artistResults, setArtistResults] = useState<ArtistResult[]>([]);
+  const [artistSearchLoading, setArtistSearchLoading] = useState(false);
+  const [artistSearchError, setArtistSearchError] = useState('');
   const [genres, setGenres] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [checking, setChecking] = useState(true); // guard: skip if already onboarded
+  const [error, setError] = useState('');
 
   useEffect(() => {
     if (!isAuthenticated) { navigate('/login'); return; }
@@ -70,6 +83,50 @@ export default function OnboardingPage() {
       });
   }, [isAuthenticated, navigate]);
 
+  useEffect(() => {
+    const query = artistInput.trim();
+    if (step !== 1 || query.length < 2) {
+      setArtistResults([]);
+      setArtistSearchLoading(false);
+      setArtistSearchError('');
+      return;
+    }
+
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      setArtistSearchLoading(true);
+      setArtistSearchError('');
+
+      try {
+        const params = new URLSearchParams({
+          q: query,
+          type: 'artists',
+          limit: '6',
+        });
+        const response = await api.fetch(`/search/music?${params}`, {
+          signal: controller.signal,
+        });
+
+        if (!response.ok) throw new Error('Artist search failed');
+
+        const data = await response.json();
+        setArtistResults((data.results || []).filter((item: ArtistResult) => item.type === 'artist'));
+      } catch (err: any) {
+        if (err?.name === 'AbortError') return;
+        console.error('Artist search failed:', err);
+        setArtistSearchError('Artist search is unavailable right now.');
+        setArtistResults([]);
+      } finally {
+        if (!controller.signal.aborted) setArtistSearchLoading(false);
+      }
+    }, 350);
+
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [artistInput, step]);
+
   const toggleItem = (
     list: string[],
     setter: (v: string[]) => void,
@@ -82,23 +139,30 @@ export default function OnboardingPage() {
     }
   };
 
-  const addArtist = () => {
-    const trimmed = artistInput.trim();
-    if (trimmed && !artists.includes(trimmed)) {
+  const addArtist = (name = artistInput, thumbnail = '') => {
+    const trimmed = name.trim();
+    const exists = artists.some(artist => artist.toLowerCase() === trimmed.toLowerCase());
+    if (trimmed && !exists) {
       setArtists([...artists, trimmed]);
+      if (thumbnail) {
+        setArtistImages(prev => ({ ...prev, [trimmed]: thumbnail }));
+      }
     }
     setArtistInput('');
+    setArtistResults([]);
   };
 
   const removeArtist = (name: string) => {
     setArtists(artists.filter(a => a !== name));
+    setArtistImages(({ [name]: _removed, ...rest }) => rest);
   };
 
   const handleFinish = async () => {
     setSaving(true);
+    setError('');
     try {
       // Save to user_preferences (marks onboardingDone and stores choices)
-      await api.fetch('/preferences', {
+      const response = await api.fetch('/preferences', {
         method: 'POST',
         body: JSON.stringify({
           favoriteLanguages: languages,
@@ -107,6 +171,7 @@ export default function OnboardingPage() {
           onboardingDone: true,
         }),
       });
+      if (!response.ok) throw new Error('Failed to save preferences');
 
       // Fire-and-forget: seed recommendations from preferences in the background.
       // Non-blocking — if this fails, user still gets to the home page.
@@ -115,23 +180,28 @@ export default function OnboardingPage() {
       navigate('/');
     } catch (err) {
       console.error('Failed to save preferences:', err);
-      // Still navigate — preferences are non-critical
-      navigate('/');
+      setError('Could not save your preferences. Please try again.');
     } finally {
       setSaving(false);
     }
   };
 
   const handleSkip = async () => {
+    setSaving(true);
+    setError('');
     try {
-      await api.fetch('/preferences', {
+      const response = await api.fetch('/preferences', {
         method: 'POST',
         body: JSON.stringify({ onboardingDone: true }),
       });
-    } catch {
-      // silent
+      if (!response.ok) throw new Error('Failed to skip onboarding');
+      navigate('/');
+    } catch (err) {
+      console.error('Failed to skip onboarding:', err);
+      setError('Could not update onboarding status. Please try again.');
+    } finally {
+      setSaving(false);
     }
-    navigate('/');
   };
 
   // Show spinner while checking onboarding status
@@ -166,6 +236,12 @@ export default function OnboardingPage() {
               Tell us about your music taste for better recommendations
             </p>
           </div>
+
+          {error && (
+            <div className="mb-4 rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+              {error}
+            </div>
+          )}
 
           {/* Step progress */}
           <div className="flex gap-1.5 mb-6">
@@ -226,23 +302,71 @@ export default function OnboardingPage() {
                       value={artistInput}
                       onChange={e => setArtistInput(e.target.value)}
                       onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), addArtist())}
-                      placeholder="e.g., Taylor Swift"
+                      placeholder="Search artist, e.g., Arjith Singh"
                       className="flex-1 px-4 py-2.5 rounded-lg bg-white/5 border border-white/10 focus:border-purple-500 focus:ring-1 focus:ring-purple-500/30 outline-none text-sm text-white placeholder-gray-500"
                     />
                     <button
-                      onClick={addArtist}
+                      onClick={() => addArtist()}
                       disabled={!artistInput.trim()}
                       className="px-4 py-2.5 bg-purple-600 hover:bg-purple-500 disabled:opacity-30 text-white text-sm font-medium rounded-lg transition-colors"
                     >
                       Add
                     </button>
                   </div>
+                  {(artistSearchLoading || artistResults.length > 0 || artistSearchError) && (
+                    <div className="mb-3 overflow-hidden rounded-xl border border-white/10 bg-black/20">
+                      {artistSearchLoading && (
+                        <div className="flex items-center gap-2 px-3 py-3 text-sm text-gray-400">
+                          <Loader2 size={16} className="animate-spin text-purple-400" />
+                          Searching artists...
+                        </div>
+                      )}
+                      {!artistSearchLoading && artistSearchError && (
+                        <div className="px-3 py-3 text-sm text-red-300">
+                          {artistSearchError}
+                        </div>
+                      )}
+                      {!artistSearchLoading && artistResults.map(result => (
+                        <button
+                          key={result.browseId || result.name}
+                          type="button"
+                          onClick={() => addArtist(result.name, result.thumbnail)}
+                          className="flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors hover:bg-white/10"
+                        >
+                          {result.thumbnail ? (
+                            <img
+                              src={result.thumbnail}
+                              alt={result.name}
+                              className="h-10 w-10 rounded-full object-cover"
+                            />
+                          ) : (
+                            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-purple-500/20 text-purple-300">
+                              <Mic2 size={18} />
+                            </div>
+                          )}
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-sm font-medium text-white">{result.name}</p>
+                            {result.subscribers && (
+                              <p className="truncate text-xs text-gray-500">{result.subscribers}</p>
+                            )}
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
                   <div className="flex flex-wrap gap-2 max-h-[200px] overflow-y-auto">
                     {artists.map(name => (
                       <span
                         key={name}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-purple-600/20 text-purple-300 rounded-full text-sm"
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-purple-600/20 text-purple-300 rounded-full text-sm"
                       >
+                        {artistImages[name] && (
+                          <img
+                            src={artistImages[name]}
+                            alt=""
+                            className="h-5 w-5 rounded-full object-cover"
+                          />
+                        )}
                         {name}
                         <button onClick={() => removeArtist(name)} className="hover:text-white transition-colors">
                           <X size={14} />
@@ -281,6 +405,7 @@ export default function OnboardingPage() {
           <div className="flex items-center justify-between mt-6 pt-4 border-t border-white/5">
             <button
               onClick={handleSkip}
+              disabled={saving}
               className="text-sm text-gray-400 hover:text-white transition-colors"
             >
               Skip for now
@@ -289,6 +414,7 @@ export default function OnboardingPage() {
               {step > 0 && (
                 <button
                   onClick={() => setStep(step - 1)}
+                  disabled={saving}
                   className="px-4 py-2 text-sm bg-white/5 hover:bg-white/10 rounded-lg text-gray-300 transition-colors"
                 >
                   Back
@@ -306,6 +432,7 @@ export default function OnboardingPage() {
               ) : (
                 <button
                   onClick={() => setStep(step + 1)}
+                  disabled={saving}
                   className="flex items-center gap-1 px-5 py-2 text-sm font-medium bg-purple-600 hover:bg-purple-500 text-white rounded-lg transition-colors"
                 >
                   Next

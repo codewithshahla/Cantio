@@ -10,6 +10,7 @@ export interface Playlist {
   description: string | null;
   thumbnail: string | null;
   isPublic: boolean;
+  shareSlug?: string | null;
   createdAt: string;
   updatedAt: string;
   _count?: {
@@ -63,7 +64,7 @@ interface PlaylistState {
   updatePlaylist: (id: string, data: { name?: string; description?: string; isPublic?: boolean }) => Promise<void>;
   deletePlaylist: (id: string) => Promise<void>;
   searchPublicPlaylists: (query?: string) => Promise<Playlist[]>;
-  getPublicPlaylist: (id: string) => Promise<Playlist>;
+  getPublicPlaylist: (identifier: string) => Promise<Playlist>;
   setCurrentPlaylist: (playlist: Playlist | null) => void;
 }
 
@@ -341,9 +342,12 @@ export const usePlaylist = create<PlaylistState>((set, get) => ({
     return data.playlists || [];
   },
 
-  getPublicPlaylist: async (id: string) => {
-    const response = await fetch(`${API_URL}/playlists/public/${id}`);
-    if (!response.ok) throw new Error('Failed to fetch public playlist');
+  getPublicPlaylist: async (identifier: string) => {
+    const response = await fetch(`${API_URL}/playlists/public/${encodeURIComponent(identifier)}`);
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error((error as any).error || 'Failed to fetch public playlist');
+    }
     const data = await response.json();
     return data.playlist;
   },

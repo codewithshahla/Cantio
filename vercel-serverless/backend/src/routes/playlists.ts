@@ -2,6 +2,7 @@ import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma.js';
 import { createPlaylistSchema, addToPlaylistSchema } from '../lib/validation.js';
+import { normalizeTrack } from '../lib/youtube.js';
 
 const updatePlaylistSchema = z.object({
   name: z.string().min(1, 'Playlist name is required').max(100).optional(),
@@ -24,6 +25,27 @@ const publicSearchSchema = z.object({
   limit: z.coerce.number().int().min(1).max(50).default(20),
   offset: z.coerce.number().int().min(0).default(0),
 });
+
+function safePublicTrack(track: any) {
+  const normalized = normalizeTrack({
+    id: track.trackId,
+    title: track.title,
+    author: { name: track.artist },
+    thumbnail: track.thumbnail ? { url: track.thumbnail } : undefined,
+    duration: track.duration ? { seconds: track.duration } : undefined,
+  });
+
+  if (!normalized) return null;
+
+  return {
+    ...track,
+    trackId: normalized.videoId,
+    title: normalized.title,
+    artist: normalized.artist,
+    thumbnail: normalized.thumbnail,
+    duration: normalized.duration,
+  };
+}
 
 export default async function playlistsRoutes(fastify: FastifyInstance) {
   // Search public playlists (no auth)
@@ -88,6 +110,7 @@ export default async function playlistsRoutes(fastify: FastifyInstance) {
           description: true,
           thumbnail: true,
           isPublic: true,
+          shareSlug: true,
           createdAt: true,
           updatedAt: true,
           _count: { select: { tracks: true } },
@@ -161,6 +184,7 @@ export default async function playlistsRoutes(fastify: FastifyInstance) {
           description: true,
           thumbnail: true,
           isPublic: true,
+          shareSlug: true,
           createdAt: true,
           updatedAt: true,
           tracks: { orderBy: { position: 'asc' } },
@@ -541,43 +565,7 @@ export default async function playlistsRoutes(fastify: FastifyInstance) {
     }
   });
 
-  // View a public playlist by slug (NO AUTH REQUIRED)
-  fastify.get('/public/:slug', async (request, reply) => {
-    try {
-      const { slug } = request.params as { slug: string };
-
-      const playlist = await prisma.playlist.findFirst({
-        where: {
-          shareSlug: slug,
-          isPublic: true,
-        },
-        include: {
-          tracks: { orderBy: { position: 'asc' } },
-          user: {
-            select: {
-              id: true,
-              username: true,
-              name: true,
-              avatar: true,
-            },
-          },
-        },
-      });
-
-      if (!playlist) {
-        reply.code(404);
-        return { error: 'Playlist not found or not public' };
-      }
-
-      return { playlist };
-    } catch (error) {
-      fastify.log.error(error);
-      reply.code(500);
-      return { error: 'Failed to fetch public playlist' };
-    }
-  });
-
-  // Search public playlists
+  // Search public playlists (legacy path)
   fastify.get('/public/search', async (request, reply) => {
     try {
       const { q, limit } = request.query as { q?: string; limit?: string };
@@ -615,4 +603,57 @@ export default async function playlistsRoutes(fastify: FastifyInstance) {
       return { error: 'Failed to search playlists' };
     }
   });
+
+  // View a public playlist by share slug or id (NO AUTH REQUIRED)
+  fastify.get('/public/:identifier', async (request, reply) => {
+    try {
+      const { identifier } = request.params as { identifier: string };
+      const decodedIdentifier = decodeURIComponent(identifier || '').trim();
+
+      if (!decodedIdentifier) {
+        reply.code(400);
+        return { error: 'Invalid playlist identifier' };
+      }
+
+      const playlist = await prisma.playlist.findFirst({
+        where: {
+          isPublic: true,
+          OR: [
+            { shareSlug: decodedIdentifier },
+            { id: decodedIdentifier },
+          ],
+        },
+        include: {
+          tracks: { orderBy: { position: 'asc' } },
+          user: {
+            select: {
+              id: true,
+              username: true,
+              name: true,
+              avatar: true,
+            },
+          },
+        },
+      });
+
+      if (!playlist) {
+        reply.code(404);
+        return { error: 'Playlist not found or not public' };
+      }
+
+      return {
+        playlist: {
+          ...playlist,
+          tracks: playlist.tracks
+            .map(safePublicTrack)
+            .filter((track: ReturnType<typeof safePublicTrack>): track is NonNullable<ReturnType<typeof safePublicTrack>> => track !== null),
+        },
+      };
+    } catch (error) {
+      fastify.log.error(error);
+      reply.code(500);
+      return { error: 'Failed to fetch public playlist' };
+    }
+  });
+
 }

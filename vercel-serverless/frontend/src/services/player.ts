@@ -119,6 +119,7 @@ let playerStoreInitialized = false;
 let playerStoreInitPromise: Promise<void> | null = null;
 let playerInstanceInitialized = false;
 let sleepTimerId: number | null = null;
+const recommendationExtensionInFlight = new Set<string>();
 
 const isStandalonePwa = () => {
   if (typeof window === 'undefined') return false;
@@ -255,7 +256,7 @@ interface PlayerStore {
   removeFromQueue: (index: number) => Promise<void>;
   reorderQueue: (fromIndex: number, toIndex: number) => void;
   clearQueue: () => Promise<void>;
-  getRelatedTracks: (videoId: string, limit?: number) => Promise<Track[]>;
+  getRelatedTracks: (videoId: string, limit?: number | null) => Promise<Track[]>;
   /**
    * Play a track immediately, then asynchronously generate a recommendation
    * queue using YouTube Music related tracks. Handles prioritization and
@@ -710,6 +711,23 @@ export const usePlayer = create<PlayerStore>((set, get) => ({
     // Mark track as played for "For You" discovery feature
     cache.markTrackAsPlayed(track.videoId);
     await get()._playInternal(track, false);
+    if (!recommendationExtensionInFlight.has(track.videoId)) {
+      recommendationExtensionInFlight.add(track.videoId);
+      get().getRelatedTracks(track.videoId, null)
+        .then((rawRelated) => {
+          const related: Track[] = rawRelated
+            .map(r => normalizeTrack(r))
+            .filter((r): r is Track => r !== null);
+          return get().enqueueRecommendations(related, {
+            sessionId: `rec-extend:${track.videoId}`,
+            mode: 'append',
+          });
+        })
+        .catch(err => console.warn('⚠️  Failed to extend recommendation queue:', err))
+        .finally(() => {
+          recommendationExtensionInFlight.delete(track.videoId);
+        });
+    }
   },
 
   _playInternal: async (track: Track, skipReverseQueue: boolean = false) => {
@@ -1107,9 +1125,13 @@ export const usePlayer = create<PlayerStore>((set, get) => ({
     await get().replaceQueue([]);
   },
 
-  getRelatedTracks: async (videoId: string, limit: number = 25) => {
-    // Request slightly more than needed so dedup still yields a full queue
-    const params = new URLSearchParams({ limit: limit.toString() });
+  getRelatedTracks: async (videoId: string, limit: number | null = null) => {
+    const params = new URLSearchParams();
+    if (typeof limit === 'number' && limit > 0) {
+      params.set('limit', limit.toString());
+    } else {
+      params.set('all', '1');
+    }
     const response = await fetch(`${API_BASE}/track/${videoId}/related?${params}`);
     if (!response.ok) return [];
     const data = await response.json();
@@ -1118,7 +1140,8 @@ export const usePlayer = create<PlayerStore>((set, get) => ({
 
   playWithRecommendations: async (track: Track) => {
     // 1. Start playback immediately — don't wait for recommendations
-    await get().play(track);
+    cache.markTrackAsPlayed(track.videoId);
+    await get()._playInternal(track, false);
 
     // 2. Build a stable session ID so clicking the same track twice in quick
     //    succession doesn't enqueue a second recommendation block.
@@ -1126,7 +1149,7 @@ export const usePlayer = create<PlayerStore>((set, get) => ({
 
     // 3. Fetch related tracks in the background (non-blocking to UI)
     try {
-      const rawRelated = await get().getRelatedTracks(track.videoId, 25);
+      const rawRelated = await get().getRelatedTracks(track.videoId, null);
 
       if (rawRelated.length === 0) {
         console.log('🎵 No related tracks found, queue stays empty');
@@ -1154,7 +1177,7 @@ export const usePlayer = create<PlayerStore>((set, get) => ({
       //    This keeps the listening experience coherent without custom ML.
       const sameArtist = related.filter(r => r.artist === track.artist);
       const others     = related.filter(r => r.artist !== track.artist);
-      const prioritized = [...sameArtist, ...others].slice(0, 20);
+      const prioritized = [...sameArtist, ...others];
 
       // 6. Enqueue with mode:'replace' so any stale queue is cleared.
       //    `enqueueRecommendations` handles dedup (current track, existing

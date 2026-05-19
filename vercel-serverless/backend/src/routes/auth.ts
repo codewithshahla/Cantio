@@ -91,7 +91,7 @@ export default async function authRoutes(fastify: FastifyInstance) {
       });
 
       if (body.preferences) {
-        const seedTracks = await buildOnboardingSeedTracks(body.preferences, 20);
+        const seedTracks = await buildOnboardingSeedTracks(body.preferences, 50);
         await prisma.userOnboardingPreferences.create({
           data: {
             userId: user.id,

@@ -58,6 +58,7 @@ model Playlist {
   description String?
   thumbnail   String?
   isPublic    Boolean  @default(false)
+  shareSlug   String?  @unique
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   
@@ -66,6 +67,7 @@ model Playlist {
   blend       Blend?          @relation("BlendPlaylist")
   
   @@index([userId])
+  @@index([shareSlug])
   @@map("playlists")
 }
 

@@ -10,12 +10,12 @@ interface TrackCardProps {
 }
 
 export default function TrackCard({ track, index }: TrackCardProps) {
-  const { currentTrack, state, play, appendQueue } = usePlayer();
+  const { currentTrack, state, playWithRecommendations, appendQueue } = usePlayer();
   const isPlaying = state === 'playing';
   const isCurrentTrack = currentTrack?.videoId === track.videoId;
 
   const handlePlay = () => {
-    play(track);
+    playWithRecommendations(track);
   };
 
   const handleAddToQueue = () => {

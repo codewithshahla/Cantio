@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { prisma } from '../lib/prisma.js';
 import { likeTrackSchema } from '../lib/validation.js';
+import { normalizeTrack } from '../lib/youtube.js';
 
 export default async function likesRoutes(fastify: FastifyInstance) {
   // Get all liked tracks
@@ -30,16 +31,29 @@ export default async function likesRoutes(fastify: FastifyInstance) {
     try {
       const body = likeTrackSchema.parse(request.body);
       const userId = (request.user as any).id;
+      const normalized = normalizeTrack({
+        id: body.trackId,
+        title: body.title,
+        author: { name: body.artist },
+        thumbnail: body.thumbnail ? { url: body.thumbnail } : undefined,
+        duration: body.duration ? { seconds: body.duration } : undefined,
+      });
+
+      const artist = normalized?.artist.trim().toLowerCase();
+      if (!normalized || !artist || artist === 'unknown' || artist === 'unknown artist') {
+        reply.code(400);
+        return { error: 'Malformed track metadata' };
+      }
 
       // Create liked track
       const likedTrack = await prisma.likedTrack.create({
         data: {
           userId,
-          trackId: body.trackId,
-          title: body.title,
-          artist: body.artist,
-          thumbnail: body.thumbnail,
-          duration: body.duration,
+          trackId: normalized.videoId,
+          title: normalized.title,
+          artist: normalized.artist,
+          thumbnail: normalized.thumbnail,
+          duration: normalized.duration,
         }
       });
 
@@ -48,7 +62,7 @@ export default async function likesRoutes(fastify: FastifyInstance) {
         where: {
           userId_trackId: {
             userId,
-            trackId: body.trackId
+            trackId: normalized.videoId
           }
         },
         update: {
@@ -60,11 +74,11 @@ export default async function likesRoutes(fastify: FastifyInstance) {
         },
         create: {
           userId,
-          trackId: body.trackId,
-          title: body.title,
-          artist: body.artist,
-          thumbnail: body.thumbnail,
-          duration: body.duration,
+          trackId: normalized.videoId,
+          title: normalized.title,
+          artist: normalized.artist,
+          thumbnail: normalized.thumbnail,
+          duration: normalized.duration,
           source: 'like',
           score: 3.0, // Start with higher score for liked tracks
           isLiked: true,

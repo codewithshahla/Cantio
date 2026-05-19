@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma.js';
+import type { VideoResult } from '../lib/youtube.js';
 
 const preferencesSchema = z.object({
   favoriteLanguages: z.array(z.string().max(50)).max(10).optional(),
@@ -8,6 +9,48 @@ const preferencesSchema = z.object({
   favoriteGenres: z.array(z.string().max(50)).max(10).optional(),
   onboardingDone: z.boolean().optional(),
 });
+
+function isUsableTrack(track: VideoResult): boolean {
+  const artist = track.artist?.trim().toLowerCase();
+  return Boolean(
+    track.videoId &&
+    track.title &&
+    artist &&
+    artist !== 'unknown' &&
+    artist !== 'unknown artist'
+  );
+}
+
+async function persistOnboardingSeeds(userId: string, seedTracks: VideoResult[]) {
+  const tracks = seedTracks.filter(isUsableTrack);
+  if (tracks.length === 0) return;
+
+  await prisma.$transaction(
+    tracks.map((track) =>
+      prisma.recommendation.upsert({
+        where: { userId_trackId: { userId, trackId: track.videoId } },
+        update: {
+          title: track.title,
+          artist: track.artist,
+          thumbnail: track.thumbnail,
+          duration: track.duration,
+          updatedAt: new Date(),
+        },
+        create: {
+          userId,
+          trackId: track.videoId,
+          title: track.title,
+          artist: track.artist,
+          thumbnail: track.thumbnail,
+          duration: track.duration,
+          source: 'onboarding',
+          score: 0.35,
+          playCount: 0,
+        },
+      })
+    )
+  );
+}
 
 export default async function preferencesRoutes(fastify: FastifyInstance) {
   // Get user preferences
@@ -33,6 +76,34 @@ export default async function preferencesRoutes(fastify: FastifyInstance) {
       fastify.log.error(error);
       reply.code(500);
       return { error: 'Failed to fetch preferences' };
+    }
+  });
+
+  // Get onboarding preferences and seed state
+  fastify.get('/onboarding', {
+    onRequest: [fastify.authenticate]
+  }, async (request, reply) => {
+    try {
+      const userId = (request.user as any).id;
+
+      const [preferences, onboarding] = await Promise.all([
+        prisma.userPreferences.findUnique({ where: { userId } }),
+        prisma.userOnboardingPreferences.findUnique({ where: { userId } }),
+      ]);
+
+      return {
+        preferences: preferences || {
+          favoriteLanguages: [],
+          favoriteArtists: [],
+          favoriteGenres: [],
+          onboardingDone: false,
+        },
+        onboarding: onboarding || null,
+      };
+    } catch (error) {
+      fastify.log.error(error);
+      reply.code(500);
+      return { error: 'Failed to fetch onboarding preferences' };
     }
   });
 
@@ -115,10 +186,10 @@ export default async function preferencesRoutes(fastify: FastifyInstance) {
       // Build seed tracks from user choices using YouTube Music searches
       const { buildOnboardingSeedTracks } = await import('../lib/onboarding.js');
       const seedTracks = await buildOnboardingSeedTracks({
-        favoriteLanguage: prefs.favoriteLanguages[0], // primary language
+        favoriteLanguages: prefs.favoriteLanguages,
         favoriteArtists: prefs.favoriteArtists,
         favoriteGenres: prefs.favoriteGenres,
-      }, 20);
+      }, 50);
 
       if (seedTracks.length === 0) {
         return { seeded: false, reason: 'No seed tracks found' };
@@ -153,6 +224,8 @@ export default async function preferencesRoutes(fastify: FastifyInstance) {
           })),
         },
       });
+
+      await persistOnboardingSeeds(userId, seedTracks);
 
       fastify.log.info(`Seeded ${seedTracks.length} tracks for user ${userId}`);
       return { seeded: true, count: seedTracks.length };

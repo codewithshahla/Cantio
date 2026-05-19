@@ -327,9 +327,10 @@ export async function getMetadata(videoId: string) {
   }
 }
 
-export async function getRelatedTracks(videoId: string, limit: number = 20): Promise<VideoResult[]> {
+export async function getRelatedTracks(videoId: string, limit?: number | null): Promise<VideoResult[]> {
   const yt = await getYouTube();
   const info: any = await (yt as any).getInfo(videoId);
+  const hasLimit = typeof limit === 'number' && limit > 0;
 
   const relatedItems: any[] = info?.related_videos
     || info?.watch_next_feed?.items
@@ -343,7 +344,7 @@ export async function getRelatedTracks(videoId: string, limit: number = 20): Pro
 
   const appendFromItems = (items: any[]) => {
     for (const item of items) {
-      if (results.length >= limit) break;
+      if (hasLimit && results.length >= limit) break;
 
       // ── ID extraction ────────────────────────────────────────────────────
       const id: string = item?.id || item?.video_id || '';
@@ -372,42 +373,49 @@ export async function getRelatedTracks(videoId: string, limit: number = 20): Pro
 
   appendFromItems(relatedItems);
 
-  if (results.length < limit) {
+  if (!hasLimit || results.length < limit) {
     try {
       let feed = info?.watch_next_feed;
       if (typeof info?.getWatchNext === 'function') {
         feed = await info.getWatchNext();
+      } else if (typeof info?.getNextContent === 'function') {
+        feed = await info.getNextContent();
       } else if (typeof info?.getWatchNextContinuation === 'function') {
         feed = await info.getWatchNextContinuation();
       }
 
       let current = feed;
-      let loops = 0;
-      while (current && results.length < limit && loops < 3) {
+      const visitedContinuations = new Set<string>();
+      while (current && (!hasLimit || results.length < limit)) {
+        const beforeCount = results.length;
         const items = extractItemsFromSource(current);
         appendFromItems(items);
 
         if (!current?.has_continuation || typeof current.getContinuation !== 'function') break;
+        if (results.length === beforeCount && !items.length) break;
+        const continuationKey = current.continuation || current.continuation_token || current.endpoint?.payload?.continuation;
+        if (continuationKey && visitedContinuations.has(continuationKey)) break;
+        if (continuationKey) visitedContinuations.add(continuationKey);
         current = await current.getContinuation();
-        loops += 1;
       }
     } catch (_) {
       // ignore watch-next continuation errors
     }
   }
 
-  if (results.length < limit) {
+  if (!hasLimit || results.length < limit) {
     try {
       const music = await getYouTubeMusic();
       const musicApi = (music as any).music || music;
       const candidates = [
+        musicApi?.getNextContent,
         musicApi?.getWatchNext,
         musicApi?.getUpNext,
         musicApi?.getRadio
       ];
 
       for (const fn of candidates) {
-        if (results.length >= limit) break;
+        if (hasLimit && results.length >= limit) break;
         if (typeof fn !== 'function') continue;
         try {
           const res = await fn.call(musicApi, videoId);
@@ -415,12 +423,16 @@ export async function getRelatedTracks(videoId: string, limit: number = 20): Pro
           appendFromItems(items);
 
           let current = res;
-          let loops = 0;
-          while (current?.has_continuation && results.length < limit && loops < 3 && typeof current.getContinuation === 'function') {
+          const visitedContinuations = new Set<string>();
+          while (current?.has_continuation && (!hasLimit || results.length < limit) && typeof current.getContinuation === 'function') {
+            const beforeCount = results.length;
+            const continuationKey = current.continuation || current.continuation_token || current.endpoint?.payload?.continuation;
+            if (continuationKey && visitedContinuations.has(continuationKey)) break;
+            if (continuationKey) visitedContinuations.add(continuationKey);
             current = await current.getContinuation();
             const moreItems = extractItemsFromSource(current);
             appendFromItems(moreItems);
-            loops += 1;
+            if (results.length === beforeCount && !moreItems.length) break;
           }
         } catch (_) {
           // ignore and try next candidate

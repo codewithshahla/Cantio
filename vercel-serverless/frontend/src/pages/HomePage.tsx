@@ -2,7 +2,8 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Music, Loader2, RefreshCw, Sparkles, Play, Pause, TrendingUp, ChevronDown, X, Shuffle } from 'lucide-react';
 import { usePlayer } from '../services/player';
 import { useState, useEffect } from 'react';
-import { useAuth } from '../lib/authStore';
+import { useNavigate } from 'react-router-dom';
+import { api, useAuth } from '../lib/authStore';
 import { getRecommendations, getGuestRecommendations, Recommendations, TopArtist } from '../services/recommendations';
 import RecommendationSection from '../components/RecommendationSection';
 import ArtistCard from '../components/ArtistCard';
@@ -13,6 +14,7 @@ import { Track, cache } from '../lib/cache';
 const API_URL = import.meta.env.VITE_API_URL ? `${import.meta.env.VITE_API_URL}/api` : 'http://localhost:4001/api';
 
 export function HomePage() {
+  const navigate = useNavigate();
   const { currentTrack, state } = usePlayer();
   const { isAuthenticated, token } = useAuth();
   const [recommendations, setRecommendations] = useState<Recommendations | null>(null);
@@ -56,7 +58,7 @@ export function HomePage() {
     try {
       const data = isAuthenticated ? await getRecommendations() : await getGuestRecommendations();
       setRecommendations(data);
-      const hasRecData = data.recentlyPlayed.length > 0 || data.mostPlayed.length > 0 || data.topArtists.length > 0;
+      const hasRecData = data.recentlyPlayed.length > 0 || data.mostPlayed.length > 0 || data.topArtists.length > 0 || data.forYou.length > 0;
       setRecStatus(hasRecData ? 'success' : 'empty');
       
       // Load discovered tracks from IndexedDB
@@ -100,6 +102,17 @@ export function HomePage() {
     loadRecommendations();
     loadPopularTracks();
   }, [isAuthenticated]);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+
+    api.fetch('/preferences/needs-onboarding')
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (data?.needsOnboarding) navigate('/onboarding');
+      })
+      .catch(() => {});
+  }, [isAuthenticated, navigate]);
 
   // Compact "Now Playing" mini-card (only when track is playing)
   const NowPlayingMini = () => {

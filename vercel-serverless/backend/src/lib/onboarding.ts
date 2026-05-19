@@ -1,8 +1,9 @@
 import Innertube from 'youtubei.js';
-import type { VideoResult } from './youtube.js';
+import { getRelatedTracks, getYTMusicArtistTopTracks, normalizeTrack, searchMusic, type VideoResult } from './youtube.js';
 
 export interface OnboardingPreferencesInput {
   favoriteLanguage?: string;
+  favoriteLanguages?: string[];
   favoriteArtists?: string[];
   favoriteGenres?: string[];
 }
@@ -29,6 +30,56 @@ function normalizeList(values?: string[]): string[] {
     out.push(t);
   }
   return out;
+}
+
+function isUsableTrack(track: VideoResult | null): track is VideoResult {
+  if (!track?.videoId || !track.title || !track.artist) return false;
+  const artist = track.artist.trim().toLowerCase();
+  if (!artist || artist === 'unknown' || artist === 'unknown artist') return false;
+  if (track.duration > 0 && (track.duration < 60 || track.duration > 900)) return false;
+  return true;
+}
+
+function dedupeTracks(tracks: VideoResult[], limit: number): VideoResult[] {
+  const seenIds = new Set<string>();
+  const seenTitles = new Set<string>();
+  const out: VideoResult[] = [];
+
+  for (const track of tracks) {
+    if (!isUsableTrack(track)) continue;
+    const titleKey = `${track.title.toLowerCase().replace(/\s+/g, ' ').trim()}::${track.artist.toLowerCase().trim()}`;
+    if (seenIds.has(track.videoId) || seenTitles.has(titleKey)) continue;
+    seenIds.add(track.videoId);
+    seenTitles.add(titleKey);
+    out.push(track);
+    if (out.length >= limit) break;
+  }
+
+  return out;
+}
+
+function normalizeArtistName(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/\s*-\s*topic$/, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function matchesSelectedArtist(track: VideoResult, selectedArtists: string[]): boolean {
+  const trackArtist = normalizeArtistName(track.artist);
+  if (!trackArtist) return false;
+
+  return selectedArtists.some((artist) => {
+    const selected = normalizeArtistName(artist);
+    return Boolean(
+      selected &&
+      (trackArtist === selected ||
+        trackArtist.includes(selected) ||
+        selected.includes(trackArtist))
+    );
+  });
 }
 
 /**
@@ -66,40 +117,17 @@ async function searchYTMSongs(query: string, limit: number): Promise<VideoResult
       const videoId: string = item.id || item.video_id || item.videoId || '';
       if (!videoId || seenIds.has(videoId)) continue;
 
-      // Duration: YTM gives seconds or a { seconds } object
       const durationRaw = item.duration;
-      const duration: number =
+      const duration =
         typeof durationRaw === 'number'
-          ? durationRaw
-          : typeof durationRaw?.seconds === 'number'
-          ? durationRaw.seconds
-          : 0;
+          ? { seconds: durationRaw }
+          : durationRaw;
 
-      // Skip very short or very long tracks (not songs)
-      if (duration > 0 && (duration < 60 || duration > 600)) continue;
-
-      const title: string =
-        item.title?.text || item.title || item.name || 'Unknown';
-
-      // Artist: prefer runs/text from author field
-      const artist: string =
-        item.artists?.[0]?.name ||
-        item.author?.name ||
-        item.subtitle?.text ||
-        'Unknown';
-
-      // Thumbnail: prefer higher-res
-      const thumbnailList: any =
-        item.thumbnail?.contents ||
-        item.thumbnails ||
-        item.thumbnail ||
-        [];
-      const thumbnail: string = Array.isArray(thumbnailList)
-        ? (thumbnailList[thumbnailList.length - 1]?.url ?? '')
-        : (thumbnailList?.url ?? '');
+      const normalized = normalizeTrack({ ...item, id: videoId, duration });
+      if (!isUsableTrack(normalized)) continue;
 
       seenIds.add(videoId);
-      results.push({ videoId, title, artist, duration, thumbnail });
+      results.push(normalized);
     } catch {
       // skip malformed items
     }
@@ -122,47 +150,118 @@ async function searchYTMSongs(query: string, limit: number): Promise<VideoResult
  */
 export async function buildOnboardingSeedTracks(
   preferences: OnboardingPreferencesInput,
-  limit: number = 20
+  limit: number = 50
 ): Promise<VideoResult[]> {
   const artists  = normalizeList(preferences.favoriteArtists);
   const genres   = normalizeList(preferences.favoriteGenres);
-  const language = preferences.favoriteLanguage?.trim();
+  const languages = normalizeList([
+    ...(preferences.favoriteLanguages || []),
+    ...(preferences.favoriteLanguage ? [preferences.favoriteLanguage] : []),
+  ]);
 
-  const results: VideoResult[] = [];
-  const seenIds  = new Set<string>();
+  const onboardingPool: VideoResult[] = [];
+  const relatedPool: VideoResult[] = [];
+  const explorationPool: VideoResult[] = [];
 
-  const addResults = (tracks: VideoResult[]) => {
-    for (const t of tracks) {
-      if (!t?.videoId || seenIds.has(t.videoId)) continue;
-      seenIds.add(t.videoId);
-      results.push(t);
-      if (results.length >= limit) return;
+  if (artists.length > 0) {
+    const artistAliases = new Set<string>(artists);
+    for (const artist of artists) {
+      try {
+        const matches = await searchMusic(artist, 'artists', 3);
+        const artistMatch = matches.find(match =>
+          match.type === 'artist' && normalizeArtistName(match.name).includes(normalizeArtistName(artist))
+        ) || matches.find(match => match.type === 'artist');
+
+        if (artistMatch?.type === 'artist') {
+          artistAliases.add(artistMatch.name);
+          const topTracks = await getYTMusicArtistTopTracks(artistMatch.browseId);
+          artistAliases.add(topTracks.name);
+          onboardingPool.push(...topTracks.tracks.filter(track => matchesSelectedArtist(track, Array.from(artistAliases))));
+        }
+      } catch (err: any) {
+        console.warn(`[onboarding] Artist page lookup failed for "${artist}":`, err.message);
+      }
     }
-  };
 
-  // How many tracks to request per query — slightly more than needed so
-  // dedup still yields enough results.
-  const perQuery = Math.min(10, Math.ceil(limit / Math.max(1, artists.length + genres.length + (language ? 1 : 0))));
+    const queryArtists = Array.from(artistAliases);
+    const artistQueries = queryArtists.flatMap((artist) => [
+      `${artist} songs`,
+      `${artist} top songs`,
+      `${artist} hits`,
+      `${artist} latest songs`,
+      `${artist} music`,
+      `${artist} best songs`,
+      `${artist} popular songs`,
+      `${artist} official songs`,
+      `${artist} album songs`,
+      `${artist} singles`,
+      ...languages.slice(0, 3).map(language => `${artist} ${language} songs`),
+      ...genres.slice(0, 3).map(genre => `${artist} ${genre} songs`),
+    ]);
 
-  // 1. Artists — highest signal: user explicitly named these
-  for (const artist of artists) {
-    if (results.length >= limit) break;
-    const tracks = await searchYTMSongs(`${artist} songs`, perQuery);
-    addResults(tracks);
+    for (const query of artistQueries) {
+      const tracks = await searchYTMSongs(query, 12);
+      onboardingPool.push(...tracks.filter(track => matchesSelectedArtist(track, Array.from(artistAliases))));
+      if (dedupeTracks(onboardingPool, limit).length >= limit) break;
+    }
+
+    const artistSeeds = dedupeTracks(onboardingPool, limit);
+
+    for (const seed of artistSeeds.slice(0, Math.min(6, artists.length * 2))) {
+      try {
+        const related = await getRelatedTracks(seed.videoId, 12);
+        relatedPool.push(...related.filter(track => matchesSelectedArtist(track, Array.from(artistAliases))));
+      } catch (err: any) {
+        console.warn(`[onboarding] Related lookup failed for "${seed.title}":`, err.message);
+      }
+    }
+
+    return dedupeTracks([...artistSeeds, ...relatedPool], limit);
   }
 
-  // 2. Genres — mid signal: genre-based discovery
+  // No artists selected: use the rest of the user's answers as a safe fallback.
+  const perQuery = Math.min(12, Math.ceil(limit / Math.max(1, genres.length + languages.length)));
+
   for (const genre of genres) {
-    if (results.length >= limit) break;
-    const tracks = await searchYTMSongs(`${genre} music hits`, perQuery);
-    addResults(tracks);
+    onboardingPool.push(...await searchYTMSongs(`${genre} music hits`, perQuery));
   }
 
-  // 3. Language — fill remaining slots with language-specific music
-  if (language && results.length < limit) {
-    const tracks = await searchYTMSongs(`${language} songs`, perQuery);
-    addResults(tracks);
+  for (const language of languages) {
+    onboardingPool.push(...await searchYTMSongs(`${language} songs`, perQuery));
   }
 
-  return results.slice(0, limit);
+  const onboardingSeeds = dedupeTracks(onboardingPool, Math.max(6, limit));
+
+  // 4. Related tracks/radios from the strongest onboarding seeds.
+  for (const seed of onboardingSeeds.slice(0, 3)) {
+    try {
+      relatedPool.push(...await getRelatedTracks(seed.videoId, 8));
+    } catch (err: any) {
+      console.warn(`[onboarding] Related lookup failed for "${seed.title}":`, err.message);
+    }
+  }
+
+  // 5. Exploration/discovery: adjacent fresh queries, or a generic fallback for skipped onboarding.
+  const explorationQueries = [
+    ...genres.map(g => `new ${g} music`),
+    ...languages.map(l => `new ${l} songs`),
+    'trending music',
+    'new music discoveries',
+  ];
+  for (const query of explorationQueries.slice(0, 4)) {
+    explorationPool.push(...await searchYTMSongs(query, 6));
+  }
+
+  const onboardingSlots = Math.ceil(limit * 0.6);
+  const relatedSlots = Math.ceil(limit * 0.2);
+  const explorationSlots = limit - onboardingSlots - relatedSlots;
+
+  return dedupeTracks([
+    ...dedupeTracks(onboardingSeeds, onboardingSlots),
+    ...dedupeTracks(relatedPool, relatedSlots),
+    ...dedupeTracks(explorationPool, explorationSlots),
+    ...onboardingSeeds,
+    ...relatedPool,
+    ...explorationPool,
+  ], limit);
 }

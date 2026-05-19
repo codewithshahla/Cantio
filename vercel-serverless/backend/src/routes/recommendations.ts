@@ -1,5 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { prisma } from '../lib/prisma.js';
+import { buildOnboardingSeedTracks } from '../lib/onboarding.js';
 
 interface Track {
   videoId: string;
@@ -20,6 +21,129 @@ interface Recommendations {
   mostPlayed:     Track[];
   topArtists:     TopArtist[];
   forYou:         Track[];
+}
+
+function isUsableTrack(track: Track): boolean {
+  const artist = track.artist?.trim().toLowerCase();
+  return Boolean(
+    track.videoId &&
+    track.title &&
+    artist &&
+    artist !== 'unknown' &&
+    artist !== 'unknown artist'
+  );
+}
+
+function normalizeArtistName(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/\s*-\s*topic$/, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function matchesArtistPreference(track: Track, favoriteArtists: string[]): boolean {
+  if (favoriteArtists.length === 0) return true;
+
+  const trackArtist = normalizeArtistName(track.artist);
+  if (!trackArtist) return false;
+
+  return favoriteArtists.some((artist) => {
+    const selected = normalizeArtistName(artist);
+    return Boolean(
+      selected &&
+      (trackArtist === selected ||
+        trackArtist.includes(selected) ||
+        selected.includes(trackArtist))
+    );
+  });
+}
+
+async function ensureOnboardingSeeds(userId: string): Promise<Track[]> {
+  const prefs = await prisma.userPreferences.findUnique({ where: { userId } });
+  const favoriteArtists = prefs?.favoriteArtists || [];
+
+  const existing = await prisma.userOnboardingPreferences.findUnique({
+    where: { userId },
+    select: { seedTracks: true },
+  });
+
+  const existingSeeds: Track[] = ((Array.isArray(existing?.seedTracks)
+    ? existing!.seedTracks : []) as any[])
+    .map(t => ({
+      videoId:   t.videoId   || '',
+      title:     t.title     || '',
+      artist:    t.artist    || '',
+      thumbnail: t.thumbnail || '',
+      duration:  t.duration  || 0,
+    }))
+    .filter(isUsableTrack)
+    .filter(track => matchesArtistPreference(track, favoriteArtists));
+
+  if (existingSeeds.length >= 50) return existingSeeds;
+
+  const generated = await buildOnboardingSeedTracks({
+    favoriteLanguages: prefs?.favoriteLanguages || [],
+    favoriteArtists,
+    favoriteGenres: prefs?.favoriteGenres || [],
+  }, 50);
+
+  const seedTracks = generated
+    .map(t => ({
+      videoId: t.videoId,
+      title: t.title,
+      artist: t.artist,
+      thumbnail: t.thumbnail || '',
+      duration: t.duration || 0,
+    }))
+    .filter(isUsableTrack)
+    .filter(track => matchesArtistPreference(track, favoriteArtists));
+
+  await prisma.userOnboardingPreferences.upsert({
+    where: { userId },
+    create: {
+      userId,
+      favoriteLanguage: prefs?.favoriteLanguages?.[0] ?? null,
+      favoriteArtists: prefs?.favoriteArtists || [],
+      favoriteGenres: prefs?.favoriteGenres || [],
+      seedTracks,
+    },
+    update: {
+      favoriteLanguage: prefs?.favoriteLanguages?.[0] ?? null,
+      favoriteArtists: prefs?.favoriteArtists || [],
+      favoriteGenres: prefs?.favoriteGenres || [],
+      seedTracks,
+    },
+  });
+
+  if (seedTracks.length > 0) {
+    await prisma.$transaction(seedTracks.map(track =>
+      prisma.recommendation.upsert({
+        where: { userId_trackId: { userId, trackId: track.videoId } },
+        update: {
+          title: track.title,
+          artist: track.artist,
+          thumbnail: track.thumbnail,
+          duration: track.duration,
+          updatedAt: new Date(),
+        },
+        create: {
+          userId,
+          trackId: track.videoId,
+          title: track.title,
+          artist: track.artist,
+          thumbnail: track.thumbnail,
+          duration: track.duration,
+          source: 'onboarding',
+          score: 0.35,
+          playCount: 0,
+        },
+      })
+    ));
+  }
+
+  return seedTracks;
 }
 
 // ─── Scoring ────────────────────────────────────────────────────────────────
@@ -121,6 +245,7 @@ export default async function recommendations(fastify: FastifyInstance) {
         playCount:    true,
         lastPlayedAt: true,
         isLiked:      true,
+        source:       true,
       },
     });
 
@@ -207,6 +332,11 @@ export default async function recommendations(fastify: FastifyInstance) {
 
     // ─── 5. Diversity-protected forYou ───────────────────────────────────────
     const now = Date.now();
+    const userPrefs = await prisma.userPreferences.findUnique({
+      where: { userId },
+      select: { favoriteArtists: true },
+    });
+    const favoriteArtists = userPrefs?.favoriteArtists || [];
 
     // Tier artists by play depth:
     //   primary   → ≥4 plays (established taste)
@@ -223,6 +353,10 @@ export default async function recommendations(fastify: FastifyInstance) {
       else            secondaryArtists.add(artist);
     }
 
+    // Seed tracks (onboarding cold-start)
+    const seedTracks = await ensureOnboardingSeeds(userId);
+    const seedTrackIds = new Set(seedTracks.map(track => track.videoId));
+
     // Classify scored tracks into pools
     const primaryPool:   Track[] = [];
     const secondaryPool: Track[] = [];
@@ -232,6 +366,14 @@ export default async function recommendations(fastify: FastifyInstance) {
 
     for (const r of scored) {
       if (recentlyPlayedIds.has(r.trackId)) continue; // skip just-played tracks
+      if (
+        favoriteArtists.length > 0 &&
+        r.source === 'onboarding' &&
+        !seedTrackIds.has(r.trackId)
+      ) {
+        continue;
+      }
+
       const daysSince = r.lastPlayedAt
         ? (now - r.lastPlayedAt.getTime()) / 86_400_000
         : 365;
@@ -246,32 +388,31 @@ export default async function recommendations(fastify: FastifyInstance) {
       }
     }
 
-    // Seed tracks (onboarding cold-start)
-    const onboarding = await prisma.userOnboardingPreferences.findUnique({
-      where:  { userId },
-      select: { seedTracks: true },
-    });
-    const seedTracks: Track[] = ((Array.isArray(onboarding?.seedTracks)
-      ? onboarding!.seedTracks : []) as any[])
-      .map(t => ({
-        videoId:   t.videoId   || '',
-        title:     t.title     || '',
-        artist:    t.artist    || '',
-        thumbnail: t.thumbnail || '',
-        duration:  t.duration  || 0,
-      }))
-      .filter(t => t.videoId && t.title && t.artist);
-
-    // Diversity budget: 20 tracks, strict max 3 per artist
-    // Slots: 40% primary | 30% secondary | 20% seeds | 10% explore
-    const LIMIT         = 20;
-    const MAX_PER_ARTIST = 3;
-    const SLOTS = {
-      primary:   8,   // 40%
-      secondary: 6,   // 30%
-      seeds:     4,   // 20%
-      explore:   2,   // 10%
-    } as const;
+    // Diversity budget: 50 tracks, strict max per artist to avoid a single
+    // selected artist taking over when the user provided multiple artists.
+    const LIMIT         = 50;
+    const MAX_PER_ARTIST = Math.max(10, Math.ceil(LIMIT / Math.max(1, topArtists.length || seedTracks.length ? new Set(seedTracks.map(t => t.artist)).size : 1)));
+    const totalPlayCount = allRecs.reduce((sum: number, rec: (typeof allRecs)[number]) => sum + rec.playCount, 0);
+    const SLOTS = totalPlayCount < 5
+      ? {
+          primary:   0,   // cold start: selected-artist onboarding seeds dominate
+          secondary: 0,
+          seeds:     50,
+          explore:   0,
+        } as const
+      : totalPlayCount < 20
+      ? {
+          primary:   10,  // warm-up: begin shifting from onboarding to behavior
+          secondary: 10,
+          seeds:     25,
+          explore:   5,
+        } as const
+      : {
+          primary:   20,  // active users: 40% recent affinity artists
+          secondary: 15,  // 30% related/emerging artists and tracks
+          seeds:     10,  // 20% onboarding preferences
+          explore:   5,   // 10% exploration/discovery
+        } as const;
 
     const forYou:      Track[] = [];
     const forYouSeen = new Set<string>();
@@ -301,9 +442,11 @@ export default async function recommendations(fastify: FastifyInstance) {
     // so forYou never has gaps when one pool is empty (new users, etc.)
     if (forYou.length < LIMIT) {
       pushSlots(seedTracks,    LIMIT);  // seeds are freshest for new users
-      pushSlots(primaryPool,   LIMIT);
-      pushSlots(secondaryPool, LIMIT);
-      pushSlots(explorePool,   LIMIT);
+      if (totalPlayCount >= 5 || favoriteArtists.length === 0) {
+        pushSlots(primaryPool,   LIMIT);
+        pushSlots(secondaryPool, LIMIT);
+        pushSlots(explorePool,   LIMIT);
+      }
     }
 
     return {

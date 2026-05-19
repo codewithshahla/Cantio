@@ -6,7 +6,8 @@ import { usePlaylist, Playlist, PlaylistTrack } from '../lib/playlistStore';
 import { usePlayer } from '../services/player';
 
 export function PublicPlaylistPage() {
-  const { id } = useParams<{ id: string }>();
+  const { id, slug } = useParams<{ id?: string; slug?: string }>();
+  const playlistIdentifier = slug || id;
   const navigate = useNavigate();
   const { getPublicPlaylist } = usePlaylist();
   const { play, replaceQueue, currentTrack, state } = usePlayer();
@@ -15,17 +16,20 @@ export function PublicPlaylistPage() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (id) {
+    if (playlistIdentifier) {
       loadPlaylist();
+    } else {
+      setError('Invalid public playlist link');
+      setLoading(false);
     }
-  }, [id]);
+  }, [playlistIdentifier]);
 
   const loadPlaylist = async () => {
-    if (!id) return;
+    if (!playlistIdentifier) return;
     setLoading(true);
     setError(null);
     try {
-      const data = await getPublicPlaylist(id);
+      const data = await getPublicPlaylist(playlistIdentifier);
       setPlaylist(data);
     } catch (e: any) {
       setError(e.message || 'Failed to load playlist');
@@ -36,7 +40,9 @@ export function PublicPlaylistPage() {
 
   const handleShare = async () => {
     if (!playlist) return;
-    const url = `${window.location.origin}/public/playlist/${playlist.id}`;
+    const url = playlist.shareSlug
+      ? `${window.location.origin}/p/${playlist.shareSlug}`
+      : `${window.location.origin}/public/playlist/${playlist.id}`;
     try {
       if (navigator.share) {
         await navigator.share({

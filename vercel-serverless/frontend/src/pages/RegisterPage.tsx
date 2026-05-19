@@ -18,10 +18,11 @@ export default function RegisterPage() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [resendCooldown, setResendCooldown] = useState(0);
+  const [creatingAccount, setCreatingAccount] = useState(false);
 
   useEffect(() => {
-    if (isAuthenticated) navigate('/');
-  }, [isAuthenticated, navigate]);
+    if (isAuthenticated && !creatingAccount) navigate('/');
+  }, [isAuthenticated, creatingAccount, navigate]);
 
   useEffect(() => {
     if (resendCooldown <= 0) return;
@@ -64,12 +65,14 @@ export default function RegisterPage() {
       return;
     }
     setLoading(true);
+    setCreatingAccount(true);
     try {
       // Register the account (no inline preferences — OnboardingPage handles that)
       await api.register(email, password, otp, name || undefined);
       // Redirect to the dedicated onboarding flow for new users
       navigate('/onboarding');
     } catch (err: any) {
+      setCreatingAccount(false);
       setError(err.message || 'Registration failed');
     } finally {
       setLoading(false);
@@ -289,5 +292,4 @@ export default function RegisterPage() {
     </div>
   );
 }
-
 

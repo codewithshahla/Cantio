@@ -208,10 +208,10 @@ async function initializeApp() {
   // F1: Related tracks for smart auto-queue
   app.get('/api/related/:videoId', async (request, reply) => {
     const { videoId } = request.params as { videoId: string };
-    const { limit } = request.query as { limit?: string };
+    const { limit, all } = request.query as { limit?: string; all?: string };
 
     try {
-      const resultLimit = limit ? parseInt(limit, 10) : 20;
+      const resultLimit = all === 'true' || all === '1' ? null : (limit ? parseInt(limit, 10) : 20);
       const tracks = await getRelatedTracks(videoId, resultLimit);
       return { tracks };
     } catch (error: any) {
@@ -244,8 +244,10 @@ async function initializeApp() {
   // Related tracks endpoint for smart queue
   app.get('/api/track/:id/related', async (request, reply) => {
     const { id } = request.params as { id: string };
-    const { limit } = request.query as { limit?: string };
-    const parsedLimit = Math.min(Math.max(parseInt(limit || '20', 10) || 20, 5), 30);
+    const { limit, all } = request.query as { limit?: string; all?: string };
+    const parsedLimit = all === 'true' || all === '1'
+      ? null
+      : Math.max(parseInt(limit || '20', 10) || 20, 5);
 
     try {
       const tracks = await getRelatedTracks(id, parsedLimit);

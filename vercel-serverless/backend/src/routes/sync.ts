@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { prisma } from '../lib/prisma.js';
 import { z } from 'zod';
+import { normalizeTrack, type VideoResult } from '../lib/youtube.js';
 
 const syncTrackSchema = z.object({
   videoId: z.string(),
@@ -14,6 +15,23 @@ const syncDataSchema = z.object({
   likes: z.array(syncTrackSchema),
   history: z.array(syncTrackSchema),
 });
+
+function normalizeSyncTrack(track: z.infer<typeof syncTrackSchema>): VideoResult | null {
+  const normalized = normalizeTrack({
+    id: track.videoId,
+    title: track.title,
+    author: { name: track.artist },
+    thumbnail: track.thumbnail ? { url: track.thumbnail } : undefined,
+    duration: track.duration ? { seconds: track.duration } : undefined,
+  });
+
+  const artist = normalized?.artist.trim().toLowerCase();
+  if (!normalized || !artist || artist === 'unknown' || artist === 'unknown artist') {
+    return null;
+  }
+
+  return normalized;
+}
 
 export default async function syncRoutes(fastify: FastifyInstance) {
   // Sync local IndexedDB data to cloud database
@@ -31,12 +49,18 @@ export default async function syncRoutes(fastify: FastifyInstance) {
       // Sync liked tracks
       for (const track of body.likes) {
         try {
+          const normalized = normalizeSyncTrack(track);
+          if (!normalized) {
+            duplicatesSkipped++;
+            continue;
+          }
+
           // Check if already exists
           const existing = await prisma.likedTrack.findUnique({
             where: {
               userId_trackId: {
                 userId,
-                trackId: track.videoId
+                trackId: normalized.videoId
               }
             }
           });
@@ -50,11 +74,11 @@ export default async function syncRoutes(fastify: FastifyInstance) {
           await prisma.likedTrack.create({
             data: {
               userId,
-              trackId: track.videoId,
-              title: track.title,
-              artist: track.artist,
-              thumbnail: track.thumbnail,
-              duration: track.duration,
+              trackId: normalized.videoId,
+              title: normalized.title,
+              artist: normalized.artist,
+              thumbnail: normalized.thumbnail,
+              duration: normalized.duration,
             }
           });
 
@@ -63,7 +87,7 @@ export default async function syncRoutes(fastify: FastifyInstance) {
             where: {
               userId_trackId: {
                 userId,
-                trackId: track.videoId
+                trackId: normalized.videoId
               }
             },
             update: {
@@ -75,11 +99,11 @@ export default async function syncRoutes(fastify: FastifyInstance) {
             },
             create: {
               userId,
-              trackId: track.videoId,
-              title: track.title,
-              artist: track.artist,
-              thumbnail: track.thumbnail,
-              duration: track.duration,
+              trackId: normalized.videoId,
+              title: normalized.title,
+              artist: normalized.artist,
+              thumbnail: normalized.thumbnail,
+              duration: normalized.duration,
               source: 'like',
               score: 3.0,
               isLiked: true,
@@ -98,15 +122,21 @@ export default async function syncRoutes(fastify: FastifyInstance) {
       const recentHistory = body.history.slice(-100); // Only last 100
       for (const track of recentHistory) {
         try {
+          const normalized = normalizeSyncTrack(track);
+          if (!normalized) {
+            duplicatesSkipped++;
+            continue;
+          }
+
           // Always create play history (duplicates are ok for history)
           await prisma.playHistory.create({
             data: {
               userId,
-              trackId: track.videoId,
-              title: track.title,
-              artist: track.artist,
-              thumbnail: track.thumbnail,
-              duration: track.duration,
+              trackId: normalized.videoId,
+              title: normalized.title,
+              artist: normalized.artist,
+              thumbnail: normalized.thumbnail,
+              duration: normalized.duration,
             }
           });
 
@@ -115,7 +145,7 @@ export default async function syncRoutes(fastify: FastifyInstance) {
             where: {
               userId_trackId: {
                 userId,
-                trackId: track.videoId
+                trackId: normalized.videoId
               }
             },
             update: {
@@ -127,11 +157,11 @@ export default async function syncRoutes(fastify: FastifyInstance) {
             },
             create: {
               userId,
-              trackId: track.videoId,
-              title: track.title,
-              artist: track.artist,
-              thumbnail: track.thumbnail,
-              duration: track.duration,
+              trackId: normalized.videoId,
+              title: normalized.title,
+              artist: normalized.artist,
+              thumbnail: normalized.thumbnail,
+              duration: normalized.duration,
               source: 'play',
               score: 1.0,
               playCount: 1,
