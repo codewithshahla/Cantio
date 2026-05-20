@@ -39,8 +39,23 @@ async function initializeApp() {
   if (initialized) return;
 
   // Register CORS
+  let corsOrigin: any = '*';
+  if (process.env.CORS_ORIGIN) {
+    if (process.env.CORS_ORIGIN.includes(',')) {
+      corsOrigin = process.env.CORS_ORIGIN.split(',')
+        .map(o => o.trim())
+        .filter(Boolean)
+        .map(o => o.endsWith('/') ? o.slice(0, -1) : o);
+    } else {
+      const trimmed = process.env.CORS_ORIGIN.trim();
+      if (trimmed !== '*') {
+        corsOrigin = trimmed.endsWith('/') ? trimmed.slice(0, -1) : trimmed;
+      }
+    }
+  }
+
   await app.register(cors, {
-    origin: process.env.CORS_ORIGIN || '*',
+    origin: corsOrigin,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']
   });
 
