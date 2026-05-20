@@ -27,6 +27,15 @@ import DownloadPopup from './components/DownloadPopup';
 import { LandingPage } from './pages/LandingPage';
 import OnboardingPage from './pages/OnboardingPage';
 
+// Landing pages (SEO optimized)
+import { AboutPage } from './pages/landing/AboutPage';
+import { FeaturesPage } from './pages/landing/FeaturesPage';
+import { UseCasesPage } from './pages/landing/UseCasesPage';
+import { ComparisonPage } from './pages/landing/ComparisonPage';
+import { FAQPage } from './pages/landing/FAQPage';
+import { DocsPage } from './pages/landing/DocsPage';
+import { SecurityPage } from './pages/landing/SecurityPage';
+
 function AppContent() {
   const isPlayerVisible = usePlayer((state) => state.isPlayerVisible);
   
@@ -97,8 +106,15 @@ export function App() {
   return (
     <BrowserRouter>
       <Routes>
-        {/* Landing page — full-page, no app shell */}
+        {/* Landing pages — full-page, no app shell */}
         <Route path="/landing" element={<LandingPage />} />
+        <Route path="/landing/about" element={<AboutPage />} />
+        <Route path="/landing/features" element={<FeaturesPage />} />
+        <Route path="/landing/use-cases" element={<UseCasesPage />} />
+        <Route path="/landing/comparison" element={<ComparisonPage />} />
+        <Route path="/landing/faq" element={<FAQPage />} />
+        <Route path="/landing/docs" element={<DocsPage />} />
+        <Route path="/landing/security" element={<SecurityPage />} />
         {/* Everything else — uses the normal app layout */}
         <Route path="/*" element={<AppContent />} />
       </Routes>

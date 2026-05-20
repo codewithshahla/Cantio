@@ -1,5 +1,21 @@
 User-agent: *
 Allow: /
 Disallow: /api/
+Disallow: /admin/
+Disallow: /private/
+Disallow: */login
+Disallow: */register
+Disallow: */forgot-password
+
+# AI Search Optimization
+Allow: /landing/
+Allow: /landing/about
+Allow: /landing/features
+Allow: /landing/use-cases
+Allow: /landing/comparison
+Allow: /landing/faq
+Allow: /landing/docs
+Allow: /landing/blog/
 
 Sitemap: https://music.akshayka.dev/sitemap.xml
+Sitemap: https://music.akshayka.dev/llms.txt

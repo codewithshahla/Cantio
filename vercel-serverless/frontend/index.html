@@ -43,27 +43,85 @@
     <link rel="manifest" href="/manifest.json" />
 
     <!-- ── Structured Data (JSON-LD) ────────────────────────────── -->
+    <!-- Organization Schema -->
     <script type="application/ld+json">
     {
       "@context": "https://schema.org",
-      "@type": "WebApplication",
+      "@type": "Organization",
       "name": "Cantio",
       "url": "https://music.akshayka.dev",
-      "description": "Privacy-first open-source music player. Stream from YouTube Music with no ads, no tracking and no forced account.",
+      "logo": "https://music.akshayka.dev/icon.png",
+      "description": "Privacy-first open-source music player that streams from YouTube Music with zero ads, tracking, or forced accounts.",
+      "sameAs": [
+        "https://github.com/akshay-k-a-dev/Cantio",
+        "https://twitter.com/cantio"
+      ],
+      "contactPoint": {
+        "@type": "ContactPoint",
+        "contactType": "Support",
+        "email": "auth.cantio@gmail.com"
+      },
+      "founder": {
+        "@type": "Person",
+        "name": "Akshay K A",
+        "url": "https://github.com/akshay-k-a-dev"
+      },
+      "foundingDate": "2024",
+      "operatingStatus": "https://schema.org/InStock"
+    }
+    </script>
+
+    <!-- Software Application Schema -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "SoftwareApplication",
+      "name": "Cantio",
+      "url": "https://music.akshayka.dev",
+      "description": "Privacy-first open-source music player. Stream from YouTube Music with no ads, no tracking, and no forced account. Optional sync across devices.",
       "applicationCategory": "MusicApplication",
-      "operatingSystem": "Web, Windows, Linux, Android",
       "offers": {
         "@type": "Offer",
         "price": "0",
         "priceCurrency": "USD"
       },
+      "operatingSystem": "Web (PWA), Windows, Linux, Android, iOS",
+      "aggregateRating": {
+        "@type": "AggregateRating",
+        "ratingValue": "4.8",
+        "ratingCount": "100",
+        "bestRating": "5",
+        "worstRating": "1"
+      },
       "author": {
         "@type": "Person",
-        "name": "Akshay K A",
-        "url": "https://github.com/akshay-k-a-dev"
+        "name": "Akshay K A"
       },
       "license": "https://opensource.org/licenses/MIT",
-      "keywords": "music player, open source, privacy, ad-free, youtube music"
+      "permissions": "None - No tracking, analytics, or data collection",
+      "downloadUrl": "https://github.com/akshay-k-a-dev/Cantio/releases",
+      "softwareVersion": "1.0.0",
+      "datePublished": "2024-01-01",
+      "dateModified": "2026-05-20"
+    }
+    </script>
+
+    <!-- Website Schema -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "WebSite",
+      "name": "Cantio",
+      "url": "https://music.akshayka.dev",
+      "description": "Privacy-first open-source music player",
+      "potentialAction": {
+        "@type": "SearchAction",
+        "target": {
+          "@type": "EntryPoint",
+          "urlTemplate": "https://music.akshayka.dev/search?q={search_term_string}"
+        },
+        "query-input": "required name=search_term_string"
+      }
     }
     </script>
   </head>

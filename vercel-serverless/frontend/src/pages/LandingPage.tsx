@@ -1,4 +1,5 @@
 import { motion } from 'framer-motion';
+import { Link } from 'react-router-dom';
 import {
   Music,
   ShieldOff,
@@ -15,6 +16,12 @@ import {
   ChevronRight,
   Github,
   Star,
+  BookOpen,
+  BarChart3,
+  AlertCircle,
+  FileText,
+  Lock,
+  HelpCircle,
 } from 'lucide-react';
 
 // ─── Download links ───────────────────────────────────────────────────────────
@@ -133,6 +140,14 @@ export function LandingPage() {
             <Music className="w-4 h-4 text-white" />
           </div>
           <span className="text-lg font-black tracking-tight">Cantio</span>
+        </div>
+        <div className="hidden md:flex items-center gap-6">
+          <Link to="/landing/about" className="text-sm text-gray-400 hover:text-white transition">About</Link>
+          <Link to="/landing/features" className="text-sm text-gray-400 hover:text-white transition">Features</Link>
+          <Link to="/landing/use-cases" className="text-sm text-gray-400 hover:text-white transition">Use Cases</Link>
+          <Link to="/landing/comparison" className="text-sm text-gray-400 hover:text-white transition">Comparison</Link>
+          <Link to="/landing/faq" className="text-sm text-gray-400 hover:text-white transition">FAQ</Link>
+          <Link to="/landing/docs" className="text-sm text-gray-400 hover:text-white transition">Docs</Link>
         </div>
         <div className="flex items-center gap-3">
           <a
@@ -416,26 +431,169 @@ export function LandingPage() {
         </div>
       </section>
 
-      {/* ── Footer ───────────────────────────────────────────────── */}
-      <footer className="py-10 px-6 border-t border-white/5 text-center text-sm text-gray-500">
-        <div className="flex items-center justify-center gap-2 mb-4">
-          <div className="w-6 h-6 rounded-md bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center">
-            <Music className="w-3 h-3 text-white" />
+      {/* ── Learn More / Resources ───────────────────────────────── */}
+      <section className="py-24 px-6 bg-gradient-to-b from-white/[0.02] to-transparent border-t border-white/5">
+        <div className="max-w-5xl mx-auto">
+          <div className="text-center mb-14">
+            <p className="text-xs font-bold uppercase tracking-widest text-gray-500 mb-3">Learn More</p>
+            <h2 className="text-3xl sm:text-4xl font-black mb-3">Resources & Documentation</h2>
+            <p className="text-gray-400">Explore Cantio in depth. Privacy, features, comparisons, and more.</p>
           </div>
-          <span className="font-bold text-white">Cantio</span>
+          <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            {/* About */}
+            <Link
+              to="/landing/about"
+              className="p-5 bg-white/[0.03] hover:bg-white/[0.08] border border-white/[0.07] hover:border-purple-500/40 rounded-2xl transition-all group"
+            >
+              <div className="w-10 h-10 rounded-lg bg-purple-500/10 flex items-center justify-center text-purple-400 mb-3 group-hover:bg-purple-500/20 transition">
+                <FileText className="w-5 h-5" />
+              </div>
+              <h3 className="font-bold mb-1 group-hover:text-purple-300 transition">About Cantio</h3>
+              <p className="text-sm text-gray-500">Mission, values, and tech stack</p>
+            </Link>
+
+            {/* Features */}
+            <Link
+              to="/landing/features"
+              className="p-5 bg-white/[0.03] hover:bg-white/[0.08] border border-white/[0.07] hover:border-cyan-500/40 rounded-2xl transition-all group"
+            >
+              <div className="w-10 h-10 rounded-lg bg-cyan-500/10 flex items-center justify-center text-cyan-400 mb-3 group-hover:bg-cyan-500/20 transition">
+                <Star className="w-5 h-5" />
+              </div>
+              <h3 className="font-bold mb-1 group-hover:text-cyan-300 transition">Full Features</h3>
+              <p className="text-sm text-gray-500">Playback, library, privacy, platforms</p>
+            </Link>
+
+            {/* Use Cases */}
+            <Link
+              to="/landing/use-cases"
+              className="p-5 bg-white/[0.03] hover:bg-white/[0.08] border border-white/[0.07] hover:border-pink-500/40 rounded-2xl transition-all group"
+            >
+              <div className="w-10 h-10 rounded-lg bg-pink-500/10 flex items-center justify-center text-pink-400 mb-3 group-hover:bg-pink-500/20 transition">
+                <Users className="w-5 h-5" />
+              </div>
+              <h3 className="font-bold mb-1 group-hover:text-pink-300 transition">Use Cases</h3>
+              <p className="text-sm text-gray-500">Who benefits most from Cantio</p>
+            </Link>
+
+            {/* Comparison */}
+            <Link
+              to="/landing/comparison"
+              className="p-5 bg-white/[0.03] hover:bg-white/[0.08] border border-white/[0.07] hover:border-orange-500/40 rounded-2xl transition-all group"
+            >
+              <div className="w-10 h-10 rounded-lg bg-orange-500/10 flex items-center justify-center text-orange-400 mb-3 group-hover:bg-orange-500/20 transition">
+                <BarChart3 className="w-5 h-5" />
+              </div>
+              <h3 className="font-bold mb-1 group-hover:text-orange-300 transition">Comparison</h3>
+              <p className="text-sm text-gray-500">vs Spotify, Apple Music, YouTube Music</p>
+            </Link>
+
+            {/* FAQ */}
+            <Link
+              to="/landing/faq"
+              className="p-5 bg-white/[0.03] hover:bg-white/[0.08] border border-white/[0.07] hover:border-green-500/40 rounded-2xl transition-all group"
+            >
+              <div className="w-10 h-10 rounded-lg bg-green-500/10 flex items-center justify-center text-green-400 mb-3 group-hover:bg-green-500/20 transition">
+                <HelpCircle className="w-5 h-5" />
+              </div>
+              <h3 className="font-bold mb-1 group-hover:text-green-300 transition">FAQ</h3>
+              <p className="text-sm text-gray-500">28+ questions answered</p>
+            </Link>
+
+            {/* Docs */}
+            <Link
+              to="/landing/docs"
+              className="p-5 bg-white/[0.03] hover:bg-white/[0.08] border border-white/[0.07] hover:border-blue-500/40 rounded-2xl transition-all group"
+            >
+              <div className="w-10 h-10 rounded-lg bg-blue-500/10 flex items-center justify-center text-blue-400 mb-3 group-hover:bg-blue-500/20 transition">
+                <BookOpen className="w-5 h-5" />
+              </div>
+              <h3 className="font-bold mb-1 group-hover:text-blue-300 transition">Documentation</h3>
+              <p className="text-sm text-gray-500">Getting started & API reference</p>
+            </Link>
+
+            {/* Security */}
+            <Link
+              to="/landing/security"
+              className="p-5 bg-white/[0.03] hover:bg-white/[0.08] border border-white/[0.07] hover:border-red-500/40 rounded-2xl transition-all group"
+            >
+              <div className="w-10 h-10 rounded-lg bg-red-500/10 flex items-center justify-center text-red-400 mb-3 group-hover:bg-red-500/20 transition">
+                <Lock className="w-5 h-5" />
+              </div>
+              <h3 className="font-bold mb-1 group-hover:text-red-300 transition">Privacy & Security</h3>
+              <p className="text-sm text-gray-500">Data handling & privacy policy</p>
+            </Link>
+
+            {/* GitHub */}
+            <a
+              href="https://github.com/akshay-k-a-dev/Cantio"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="p-5 bg-white/[0.03] hover:bg-white/[0.08] border border-white/[0.07] hover:border-gray-400/40 rounded-2xl transition-all group"
+            >
+              <div className="w-10 h-10 rounded-lg bg-gray-500/10 flex items-center justify-center text-gray-400 mb-3 group-hover:bg-gray-500/20 transition">
+                <Github className="w-5 h-5" />
+              </div>
+              <h3 className="font-bold mb-1 group-hover:text-gray-300 transition">GitHub</h3>
+              <p className="text-sm text-gray-500">View source code & contribute</p>
+            </a>
+          </div>
         </div>
-        <p className="mb-3">Open-source music player · Free forever</p>
-        <div className="flex items-center justify-center gap-6">
-          <a
-            href="https://github.com/akshay-k-a-dev/Cantio"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-1.5 hover:text-white transition-colors"
-          >
-            <Github className="w-4 h-4" />
-            GitHub
-          </a>
-          <a href="/" className="hover:text-white transition-colors">Launch App</a>
+      </section>
+
+      {/* ── Footer ───────────────────────────────────────────────── */}
+      <footer className="py-12 px-6 border-t border-white/5 bg-white/[0.01]">
+        <div className="max-w-5xl mx-auto">
+          <div className="grid md:grid-cols-4 gap-8 mb-8">
+            <div>
+              <div className="flex items-center gap-2 mb-4">
+                <div className="w-6 h-6 rounded-md bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center">
+                  <Music className="w-3 h-3 text-white" />
+                </div>
+                <span className="font-bold text-white">Cantio</span>
+              </div>
+              <p className="text-sm text-gray-500">Open-source music player · Free forever</p>
+            </div>
+            <div>
+              <p className="text-xs font-bold uppercase tracking-widest text-gray-400 mb-3">Product</p>
+              <ul className="space-y-2 text-sm">
+                <li><a href="/" className="text-gray-500 hover:text-white transition">App</a></li>
+                <li><Link to="/landing/features" className="text-gray-500 hover:text-white transition">Features</Link></li>
+                <li><Link to="/landing/use-cases" className="text-gray-500 hover:text-white transition">Use Cases</Link></li>
+              </ul>
+            </div>
+            <div>
+              <p className="text-xs font-bold uppercase tracking-widest text-gray-400 mb-3">Resources</p>
+              <ul className="space-y-2 text-sm">
+                <li><Link to="/landing/docs" className="text-gray-500 hover:text-white transition">Documentation</Link></li>
+                <li><Link to="/landing/faq" className="text-gray-500 hover:text-white transition">FAQ</Link></li>
+                <li><Link to="/landing/comparison" className="text-gray-500 hover:text-white transition">Comparison</Link></li>
+              </ul>
+            </div>
+            <div>
+              <p className="text-xs font-bold uppercase tracking-widest text-gray-400 mb-3">Legal</p>
+              <ul className="space-y-2 text-sm">
+                <li><Link to="/landing/security" className="text-gray-500 hover:text-white transition">Privacy</Link></li>
+                <li><a href="https://github.com/akshay-k-a-dev/Cantio/blob/main/LICENSE" target="_blank" rel="noopener noreferrer" className="text-gray-500 hover:text-white transition">License (MIT)</a></li>
+                <li><a href="mailto:auth.cantio@gmail.com" className="text-gray-500 hover:text-white transition">Contact</a></li>
+              </ul>
+            </div>
+          </div>
+          <div className="border-t border-white/5 pt-8 flex flex-col md:flex-row justify-between items-center text-sm text-gray-500">
+            <p>&copy; 2026 Cantio. Open source under MIT license.</p>
+            <div className="flex items-center gap-6 mt-4 md:mt-0">
+              <a
+                href="https://github.com/akshay-k-a-dev/Cantio"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-1.5 hover:text-white transition-colors"
+              >
+                <Github className="w-4 h-4" />
+                GitHub
+              </a>
+              <a href="/" className="hover:text-white transition-colors">Launch App</a>
+            </div>
+          </div>
         </div>
       </footer>
     </div>
