@@ -119,7 +119,6 @@ let playerStoreInitialized = false;
 let playerStoreInitPromise: Promise<void> | null = null;
 let playerInstanceInitialized = false;
 let sleepTimerId: number | null = null;
-const recommendationExtensionInFlight = new Set<string>();
 
 const isStandalonePwa = () => {
   if (typeof window === 'undefined') return false;
@@ -707,27 +706,11 @@ export const usePlayer = create<PlayerStore>((set, get) => ({
   },
 
   play: async (track: Track) => {
-    console.log('🚀 NEW CODE LOADED - play() called for:', track.title);
-    // Mark track as played for "For You" discovery feature
+    // Play a track within an existing context (playlist / liked songs / manual queue).
+    // Does NOT fetch recommendations — the caller is responsible for managing the queue.
+    // Use playWithRecommendations() for standalone / home / search play.
     cache.markTrackAsPlayed(track.videoId);
     await get()._playInternal(track, false);
-    if (!recommendationExtensionInFlight.has(track.videoId)) {
-      recommendationExtensionInFlight.add(track.videoId);
-      get().getRelatedTracks(track.videoId, null)
-        .then((rawRelated) => {
-          const related: Track[] = rawRelated
-            .map(r => normalizeTrack(r))
-            .filter((r): r is Track => r !== null);
-          return get().enqueueRecommendations(related, {
-            sessionId: `rec-extend:${track.videoId}`,
-            mode: 'append',
-          });
-        })
-        .catch(err => console.warn('⚠️  Failed to extend recommendation queue:', err))
-        .finally(() => {
-          recommendationExtensionInFlight.delete(track.videoId);
-        });
-    }
   },
 
   _playInternal: async (track: Track, skipReverseQueue: boolean = false) => {
@@ -907,7 +890,10 @@ export const usePlayer = create<PlayerStore>((set, get) => ({
     if (manualQueue.length > 0) {
       const [nextTrack, ...remaining] = manualQueue;
       useQueue.setState({ manualQueue: remaining });
-      await get().play(nextTrack);
+      // Use _playInternal directly — do NOT trigger recommendation extension
+      // for queued tracks. Recommendations are only for standalone play.
+      await get()._playInternal(nextTrack, false);
+      cache.markTrackAsPlayed(nextTrack.videoId);
       return;
     }
 
@@ -925,7 +911,10 @@ export const usePlayer = create<PlayerStore>((set, get) => ({
       }
 
       set({ queue: newQueue });
-      await get().play(nextTrack);
+      // Use _playInternal directly — strictly follow the playlist/liked-songs queue.
+      // Never inject recommendations mid-queue.
+      await get()._playInternal(nextTrack, false);
+      cache.markTrackAsPlayed(nextTrack.videoId);
       return;
     }
 
@@ -939,7 +928,8 @@ export const usePlayer = create<PlayerStore>((set, get) => ({
         const [nextTrack, ...rest] = recycled;
         set({ queue: rest });
         await cache.clearReverseQueue();
-        await get().play(nextTrack);
+        await get()._playInternal(nextTrack, false);
+        cache.markTrackAsPlayed(nextTrack.videoId);
         return;
       }
     }
