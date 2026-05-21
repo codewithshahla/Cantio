@@ -1,41 +1,18 @@
-import { useState } from 'react';
+import { useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Search as SearchIcon, Heart, Plus, ListMusic, Disc3, Mic2, PlayCircle } from 'lucide-react';
+import { Search as SearchIcon, Heart, Plus, ListMusic, Disc3, Mic2, PlayCircle, X } from 'lucide-react';
 import { usePlayer } from '../services/player';
 import { Track } from '../lib/cache';
 import { AddToPlaylistDropdown } from '../components/AddToPlaylistDropdown';
 import { usePlaylist } from '../lib/playlistStore';
-
-type SearchFilter = 'songs' | 'playlists' | 'albums' | 'artists';
-
-interface MusicPlaylistResult {
-  type: 'playlist';
-  playlistId: string;
-  title: string;
-  author: string;
-  thumbnail: string;
-  trackCount?: number;
-}
-
-interface MusicAlbumResult {
-  type: 'album';
-  browseId: string;
-  title: string;
-  artist: string;
-  thumbnail: string;
-  year?: string;
-}
-
-interface MusicArtistResult {
-  type: 'artist';
-  browseId: string;
-  name: string;
-  thumbnail: string;
-  subscribers?: string;
-}
-
-type MusicResult = MusicPlaylistResult | MusicAlbumResult | MusicArtistResult;
+import {
+  useSearchSession,
+  SearchFilter,
+  MusicResult,
+} from '../lib/searchSessionStore';
+import { useSearchPlaybackHistory } from '../lib/searchPlaybackHistoryStore';
+import { RecentFromSearch } from '../components/RecentFromSearch';
 
 const FILTERS: { id: SearchFilter; label: string; icon: React.ReactNode }[] = [
   { id: 'songs',     label: 'Songs',     icon: <ListMusic size={14} /> },
@@ -46,68 +23,72 @@ const FILTERS: { id: SearchFilter; label: string; icon: React.ReactNode }[] = [
 
 export function SearchPage() {
   const navigate = useNavigate();
-  const [query, setQuery] = useState('');
-  const [filter, setFilter] = useState<SearchFilter>('songs');
-  const [songResults, setSongResults] = useState<Track[]>([]);
-  const [musicResults, setMusicResults] = useState<MusicResult[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [currentLimit, setCurrentLimit] = useState(10);
+
+  // ── Session store (in-memory — survives route nav, clears on refresh) ──
+  const {
+    query, filter, songResults, musicResults,
+    loading, loadingMore, currentLimit,
+    setQuery, setFilter: setSessionFilter,
+    newSearch, loadMore, clear: clearSearch,
+  } = useSearchSession();
+
+  // ── Player & playlist hooks ──────────────────────────────────────
   const { play, appendQueue, playWithRecommendations, currentTrack, state, like, unlike, isLiked } = usePlayer();
   const { publicPlaylists, searchPublicPlaylists } = usePlaylist();
 
+  // ── Search playback history (IndexedDB — survives refresh) ──────
+  const { recordPlay, hydrate: hydrateHistory } = useSearchPlaybackHistory();
+
+  // ── Fetch functions (stable references) ──────────────────────────
+  const fetchSongs = useCallback(
+    (q: string, limit: number) => usePlayer.getState().search(q, limit),
+    [],
+  );
+  const fetchMusic = useCallback(
+    (q: string, f: string, limit: number) => usePlayer.getState().searchMusic(q, f as any, limit),
+    [],
+  );
+  const fetchPublicPlaylists = useCallback(
+    async (q: string) => { await searchPublicPlaylists(q); },
+    [searchPublicPlaylists],
+  );
+
+  // ── Hydrate play history on mount ────────────────────────────────
+  useEffect(() => {
+    hydrateHistory();
+  }, [hydrateHistory]);
+
+  // ── Handlers ─────────────────────────────────────────────────────
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!query.trim()) return;
-    setLoading(true);
-    setCurrentLimit(10);
-    try {
-      if (filter === 'songs') {
-        const results = await usePlayer.getState().search(query, 10);
-        setSongResults(results);
-        setMusicResults([]);
-      } else {
-        const results = await usePlayer.getState().searchMusic(query, filter, 20);
-        setMusicResults(results);
-        setSongResults([]);
-      }
-      searchPublicPlaylists(query.trim()).catch(() => {});
-    } catch (error) {
-      console.error('Search failed:', error);
-      setSongResults([]);
-      setMusicResults([]);
-    } finally {
-      setLoading(false);
-    }
+    await newSearch(fetchSongs, fetchMusic, fetchPublicPlaylists);
   };
 
   const handleFilterChange = (newFilter: SearchFilter) => {
-    setFilter(newFilter);
-    setSongResults([]);
-    setMusicResults([]);
-    setCurrentLimit(10);
+    setSessionFilter(newFilter);
   };
 
   const handleLoadMore = async () => {
-    if (!query.trim() || filter !== 'songs') return;
-    if (currentLimit >= 50) return;
-    setLoadingMore(true);
-    try {
-      const newLimit = Math.min(currentLimit + 10, 50);
-      const results = await usePlayer.getState().search(query, newLimit);
-      setSongResults(results);
-      setCurrentLimit(newLimit);
-    } catch (error) {
-      console.error('Load more failed:', error);
-    } finally {
-      setLoadingMore(false);
-    }
+    await loadMore(fetchSongs);
+  };
+
+  const handleClearSearch = () => {
+    clearSearch();
   };
 
   // Play track and automatically build a recommendation queue from
   // YouTube Music related tracks. All fetch/prioritize/dedup logic
   // lives in playWithRecommendations inside the player service.
   const handlePlay = async (track: Track, _index: number) => {
+    // Record in search-origin play history
+    recordPlay({
+      id: track.videoId,
+      type: 'song',
+      title: track.title,
+      subtitle: track.artist,
+      artwork: track.thumbnail,
+      searchQuery: query,
+    });
     await playWithRecommendations(track);
   };
 
@@ -126,51 +107,80 @@ export function SearchPage() {
   };
 
   const handleMusicCardClick = (type: 'playlist' | 'album' | 'artist', id: string) => {
+    // Find the item data to record in search play history
+    const item = musicResults.find((r: MusicResult) => {
+      if (r.type === 'playlist') return r.playlistId === id;
+      if (r.type === 'album' || r.type === 'artist') return r.browseId === id;
+      return false;
+    });
+    if (item) {
+      recordPlay({
+        id,
+        type: item.type as 'playlist' | 'album' | 'artist',
+        title: item.type === 'artist' ? item.name : item.title,
+        subtitle: item.type === 'playlist' ? item.author : item.type === 'album' ? item.artist : (item.subscribers || ''),
+        artwork: item.thumbnail,
+        searchQuery: query,
+      });
+    }
     navigate(`/ytmusic/${type}/${id}`);
   };
 
   const hasResults = filter === 'songs' ? songResults.length > 0 : musicResults.length > 0;
 
   return (
-    <div className="max-w-6xl mx-auto space-y-6">
+    <div className="max-w-6xl mx-auto space-y-4 sm:space-y-6">
       {/* Search Header */}
       <div>
-        <h1 className="text-3xl md:text-4xl font-black mb-4 md:mb-6">Search</h1>
-        <form onSubmit={handleSearch} className="relative">
-          <SearchIcon
-            className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none"
-            size={20}
-          />
-          <input
-            type="search"
-            inputMode="search"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="What do you want to listen to?"
-            className="w-full bg-white/10 border-0 rounded-full px-12 py-3 md:py-4 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-white/20 text-base"
-            autoComplete="off"
-            autoCorrect="off"
-            autoCapitalize="off"
-            spellCheck="false"
-          />
+        <h1 className="text-2xl sm:text-3xl md:text-4xl font-black mb-3 sm:mb-4 md:mb-6">Search</h1>
+        <form onSubmit={handleSearch} className="flex items-center gap-2">
+          <div className="relative flex-1 min-w-0">
+            <SearchIcon
+              className="absolute left-3 sm:left-4 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none"
+              size={18}
+            />
+            <input
+              type="search"
+              inputMode="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="What do you want to listen to?"
+              className="w-full bg-white/10 border-0 rounded-full pl-10 sm:pl-12 pr-10 py-2.5 sm:py-3 md:py-3.5 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-white/20 text-sm sm:text-base"
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="off"
+              spellCheck="false"
+            />
+            {/* Clear search X button — inside the input, right side */}
+            {(query || hasResults) && (
+              <button
+                type="button"
+                onClick={handleClearSearch}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1.5 rounded-full text-gray-400 hover:text-white active:text-white hover:bg-white/10 active:bg-white/15 transition-colors touch-manipulation"
+                aria-label="Clear search"
+              >
+                <X size={16} className="sm:w-[18px] sm:h-[18px]" />
+              </button>
+            )}
+          </div>
           <button
             type="submit"
-            className="absolute right-2 top-1/2 -translate-y-1/2 bg-white text-black px-4 py-1.5 md:px-6 md:py-2 rounded-full font-semibold hover:bg-gray-200 transition-colors text-sm md:text-base"
+            className="flex-shrink-0 bg-white text-black px-4 py-2.5 sm:px-5 sm:py-3 md:px-6 md:py-3.5 rounded-full font-semibold hover:bg-gray-200 active:bg-gray-300 transition-colors text-sm sm:text-base touch-manipulation"
           >
             Search
           </button>
         </form>
 
-        {/* Filter Tabs */}
-        <div className="flex gap-2 mt-4 flex-wrap">
+        {/* Filter Tabs — horizontally scrollable on small screens */}
+        <div className="flex gap-1.5 sm:gap-2 mt-3 sm:mt-4 overflow-x-auto scrollbar-hide pb-0.5 -mx-1 px-1">
           {FILTERS.map((f) => (
             <button
               key={f.id}
               onClick={() => handleFilterChange(f.id)}
-              className={`flex items-center gap-1.5 px-4 py-1.5 rounded-full text-sm font-medium transition-all ${
+              className={`flex-shrink-0 flex items-center gap-1 sm:gap-1.5 px-3 sm:px-4 py-1.5 sm:py-2 rounded-full text-xs sm:text-sm font-medium transition-all touch-manipulation ${
                 filter === f.id
                   ? 'bg-white text-black'
-                  : 'bg-white/10 text-gray-300 hover:bg-white/20'
+                  : 'bg-white/10 text-gray-300 hover:bg-white/20 active:bg-white/25'
               }`}
             >
               {f.icon}
@@ -191,7 +201,7 @@ export function SearchPage() {
       {!loading && filter === 'songs' && songResults.length > 0 && (
         <div>
           <h2 className="text-xl md:text-2xl font-bold mb-4">Songs</h2>
-          <div className="space-y-1">
+          <div className="space-y-0.5 sm:space-y-1">
             {songResults.map((track, index) => {
               const isPlaying = currentTrack?.videoId === track.videoId && state === 'playing';
               const liked = isLiked(track.videoId);
@@ -202,12 +212,13 @@ export function SearchPage() {
                   animate={{ opacity: 1 }}
                   transition={{ delay: index * 0.03 }}
                   onClick={() => handlePlay(track, index)}
-                  className="flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-white/10 active:bg-white/15 cursor-pointer group"
+                  className="flex items-center gap-2.5 sm:gap-3 px-2 sm:px-3 py-2 sm:py-2.5 rounded-lg hover:bg-white/10 active:bg-white/15 cursor-pointer group touch-manipulation"
                 >
                   <img
                     src={track.thumbnail}
                     alt={track.title}
-                    className="w-12 h-12 rounded-lg object-cover flex-shrink-0"
+                    loading="lazy"
+                    className="w-10 h-10 sm:w-12 sm:h-12 rounded-lg object-cover flex-shrink-0"
                   />
                   <div className="flex-1 min-w-0">
                     <p className={`text-sm font-medium truncate ${isPlaying ? 'text-green-500' : 'text-white'}`}>
@@ -297,8 +308,8 @@ export function SearchPage() {
       {!loading && filter !== 'songs' && musicResults.length > 0 && (
         <div>
           <h2 className="text-xl md:text-2xl font-bold mb-4 capitalize">{filter}</h2>
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
-            {musicResults.map((item, index) => {
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2.5 sm:gap-3 md:gap-4">
+            {musicResults.map((item: MusicResult, index: number) => {
               if (item.type === 'playlist') {
                 return (
                   <motion.div
@@ -307,7 +318,7 @@ export function SearchPage() {
                     animate={{ opacity: 1, scale: 1 }}
                     transition={{ delay: index * 0.04 }}
                     onClick={() => handleMusicCardClick('playlist', item.playlistId)}
-                    className="bg-white/5 hover:bg-white/10 rounded-xl p-3 cursor-pointer transition-colors group"
+                    className="bg-white/5 hover:bg-white/10 active:bg-white/15 rounded-xl p-2 sm:p-3 cursor-pointer transition-colors group touch-manipulation"
                   >
                     <div className="relative mb-3">
                       <img
@@ -334,7 +345,7 @@ export function SearchPage() {
                     animate={{ opacity: 1, scale: 1 }}
                     transition={{ delay: index * 0.04 }}
                     onClick={() => handleMusicCardClick('album', item.browseId)}
-                    className="bg-white/5 hover:bg-white/10 rounded-xl p-3 transition-colors cursor-pointer"
+                    className="bg-white/5 hover:bg-white/10 active:bg-white/15 rounded-xl p-2 sm:p-3 transition-colors cursor-pointer touch-manipulation"
                   >
                     <div className="mb-3">
                       <img
@@ -359,7 +370,7 @@ export function SearchPage() {
                     animate={{ opacity: 1, scale: 1 }}
                     transition={{ delay: index * 0.04 }}
                     onClick={() => handleMusicCardClick('artist', item.browseId)}
-                    className="bg-white/5 hover:bg-white/10 rounded-xl p-3 transition-colors text-center cursor-pointer"
+                    className="bg-white/5 hover:bg-white/10 active:bg-white/15 rounded-xl p-2 sm:p-3 transition-colors text-center cursor-pointer touch-manipulation"
                   >
                     <div className="mb-3">
                       <img
@@ -381,6 +392,11 @@ export function SearchPage() {
             })}
           </div>
         </div>
+      )}
+
+      {/* Recent From Search — shown when no active search results */}
+      {!loading && !hasResults && (
+        <RecentFromSearch />
       )}
 
       {/* Empty State */}
