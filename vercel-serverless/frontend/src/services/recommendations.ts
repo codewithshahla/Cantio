@@ -86,7 +86,13 @@ export async function getGuestRecommendations(): Promise<Recommendations> {
   const artistMap = new Map<string, { tracks: Track[]; playCount: number }>();
 
   reverseQueue.forEach((track: Track) => {
-    const existing = artistMap.get(track.artist);
+    // Clean artist name: strip "- Topic" suffix
+    const cleanArtist = track.artist.replace(/\s*-\s*Topic$/i, '').trim();
+    // Skip Unknown artists — matches backend filtering
+    const artistLower = cleanArtist.toLowerCase();
+    if (!cleanArtist || artistLower === 'unknown' || artistLower === 'unknown artist') return;
+
+    const existing = artistMap.get(cleanArtist);
     if (existing) {
       existing.playCount++;
       // Only add unique tracks
@@ -94,7 +100,7 @@ export async function getGuestRecommendations(): Promise<Recommendations> {
         existing.tracks.push(track);
       }
     } else {
-      artistMap.set(track.artist, {
+      artistMap.set(cleanArtist, {
         tracks: [track],
         playCount: 1
       });

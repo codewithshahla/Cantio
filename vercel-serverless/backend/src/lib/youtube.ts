@@ -86,6 +86,16 @@ function normalizeTitleKey(title?: string): string {
 // ─── Centralized artist extraction ───────────────────────────────────────────
 
 /**
+ * cleanArtistName()
+ *
+ * Strips YouTube's " - Topic" suffix from auto-generated topic channels
+ * so that "Taylor Swift - Topic" becomes "Taylor Swift".
+ */
+function cleanArtistName(name: string): string {
+  return name.replace(/\s*-\s*Topic$/i, '').trim();
+}
+
+/**
  * extractArtistFromItem()
  *
  * Attempts to pull an artist name from any Innertube item shape.
@@ -93,56 +103,91 @@ function normalizeTitleKey(title?: string): string {
  *
  * Priority order (matches spec):
  *   1. item.artists[] — YTM MusicResponsiveListItem
- *   2. item.byline    — YTM watchNext items
- *   3. item.author    — regular YT items (may be Text node or {name})
- *   4. item.uploader  — alternate YT field
- *   5. item.channel   — alternate YT field
- *   6. item.subtitle  — YTM secondary info row
- *   7. item.ownerText — legacy YT data
- *   8. '' (caller decides on fallback)
+ *   2. item.authors[] — alternate YTM array format
+ *   3. item.byline    — YTM watchNext items
+ *   4. item.author    — regular YT items (may be Text node or {name})
+ *   5. item.uploader  — alternate YT field
+ *   6. item.channel   — alternate YT field
+ *   7. item.flex_columns — YTM MusicResponsiveListItem secondary column
+ *   8. item.subtitle  — YTM secondary info row
+ *   9. item.ownerText — legacy YT data
+ *  10. '' (caller decides on fallback)
  */
 function extractArtistFromItem(item: any): string {
   if (!item) return '';
 
   // 1. YTM artists[] array (MusicResponsiveListItem from WEB_REMIX)
   if (Array.isArray(item.artists) && item.artists.length > 0) {
-    const name = item.artists[0]?.name || getText(item.artists[0]);
-    if (name) return name;
+    const names = item.artists
+      .map((a: any) => a?.name || getText(a))
+      .filter(Boolean);
+    if (names.length > 0) return cleanArtistName(names.join(', '));
   }
 
-  // 2. byline — YTM watchNext sidebar items
-  const byline = getText(item.byline);
-  if (byline) return byline;
+  // 2. authors[] — alternate YTM format (MusicCardShelfItem, etc.)
+  if (Array.isArray(item.authors) && item.authors.length > 0) {
+    const names = item.authors
+      .map((a: any) => a?.name || getText(a))
+      .filter(Boolean);
+    if (names.length > 0) return cleanArtistName(names.join(', '));
+  }
 
-  // 3. author — regular YT items (can be a Text object OR {name: string})
+  // 3. byline — YTM watchNext sidebar items
+  const byline = getText(item.byline);
+  if (byline) return cleanArtistName(byline);
+
+  // 4. author — regular YT items (can be a Text object OR {name: string})
   if (item.author) {
     const authorName = item.author?.name || getText(item.author);
-    if (authorName) return authorName;
+    if (authorName) return cleanArtistName(authorName);
   }
 
-  // 4. uploader — alternate YT field name
+  // 5. uploader — alternate YT field name
   if (item.uploader) {
     const uploaderName = item.uploader?.name || getText(item.uploader);
-    if (uploaderName) return uploaderName;
+    if (uploaderName) return cleanArtistName(uploaderName);
   }
 
-  // 5. channel — another alternate YT field
+  // 6. channel — another alternate YT field
   if (item.channel) {
     const channelName = item.channel?.name || getText(item.channel);
-    if (channelName) return channelName;
+    if (channelName) return cleanArtistName(channelName);
   }
 
-  // 6. subtitle — YTM items often carry "Artist • Album • Year" here
+  // 7. flex_columns — YTM MusicResponsiveListItem stores artist in secondary columns
+  if (Array.isArray(item.flex_columns) && item.flex_columns.length > 1) {
+    for (let i = 1; i < item.flex_columns.length; i++) {
+      const col = item.flex_columns[i];
+      const colText = getText(col?.title) || getText(col?.text);
+      if (colText) {
+        // Take first segment before bullet separator — usually the artist name
+        const firstPart = colText.split('•')[0].split('·')[0].trim();
+        if (firstPart && firstPart.toLowerCase() !== 'song' && firstPart.toLowerCase() !== 'video') {
+          return cleanArtistName(firstPart);
+        }
+      }
+    }
+  }
+
+  // 8. subtitle — YTM items often carry "Artist • Album • Year" here
   const subtitle = getText(item.subtitle);
   if (subtitle) {
     // Take only the part before the first separator bullet
     const firstPart = subtitle.split('•')[0].split('·')[0].trim();
-    if (firstPart) return firstPart;
+    // Filter out generic type labels like "Song", "Video"
+    if (firstPart && firstPart.toLowerCase() !== 'song' && firstPart.toLowerCase() !== 'video') {
+      return cleanArtistName(firstPart);
+    }
+    // Try second segment if first was a type label
+    const segments = subtitle.split(/[•·]/).map((s: string) => s.trim()).filter(Boolean);
+    if (segments.length > 1) {
+      return cleanArtistName(segments[1]);
+    }
   }
 
-  // 7. ownerText — legacy YouTube data format
+  // 9. ownerText — legacy YouTube data format
   const ownerText = getText(item.ownerText);
-  if (ownerText) return ownerText;
+  if (ownerText) return cleanArtistName(ownerText);
 
   return '';
 }
@@ -179,6 +224,8 @@ export function normalizeTrack(
   let artist = extractArtistFromItem(item);
   if (!artist && fallbacks?.artist) artist = fallbacks.artist;
   if (!artist) artist = 'Unknown Artist';
+  // Always clean "- Topic" suffix from final artist name
+  artist = cleanArtistName(artist);
 
   // Thumbnail
   const thumbnail =
@@ -212,35 +259,106 @@ function extractItemsFromSource(source: any): any[] {
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
+// ─── Shared content filter helpers ────────────────────────────────────────────
+
+const BLACKLIST_KEYWORDS = [
+  'interview', 'podcast', 'reaction', 'review', 'analysis',
+  'trailer', 'teaser', 'explanation', 'news', 'case',
+  'arrest', 'arrested', 'mla', 'court', 'crime', 'police',
+  'exclusive', 'reporter', 'debate', 'breaking', 'politics',
+  'geopolitics', 'documentary', 'vlog', 'comedy', 'sketch',
+  'prank', 'challenge', 'gaming', 'walkthrough', 'speedrun',
+  'mod showcase', 'gameplay', 'stream highlights', 'tv'
+];
+
+const MIN_DURATION = 60;
+const MAX_DURATION = 600;
+
+function isValidMusicTrack(video: VideoResult): boolean {
+  if (video.duration && (video.duration < MIN_DURATION || video.duration > MAX_DURATION)) return false;
+  const titleLower = video.title.toLowerCase();
+  const artistLower = video.artist.toLowerCase();
+  return !BLACKLIST_KEYWORDS.some(keyword =>
+    titleLower.includes(keyword) || artistLower.includes(keyword)
+  );
+}
+
+/**
+ * searchMusicSongs()
+ *
+ * Uses the YouTube Music (WEB_REMIX) client to search for songs.
+ * These results are higher quality for music — proper artist names, no
+ * vlogs/podcasts, and official song metadata from YT Music's catalog.
+ *
+ * Returns top `limit` song results from YT Music.
+ */
+export async function searchMusicSongs(query: string, limit: number = 10): Promise<VideoResult[]> {
+  const yt = await getYouTubeMusic();
+
+  try {
+    const raw = await (yt as any).music.search(query, { type: 'song' });
+    const items: any[] = raw?.contents?.flatMap((section: any) => section?.contents || section?.items || [])
+      ?? raw?.items
+      ?? [];
+
+    const results: VideoResult[] = [];
+    const seen = new Set<string>();
+    const seenTitles = new Set<string>();
+
+    for (const item of items) {
+      if (results.length >= limit) break;
+      if (!item) continue;
+
+      const normalized = normalizeTrack(item);
+      if (!normalized) continue;
+      if (seen.has(normalized.videoId)) continue;
+
+      // Title-level dedup
+      const titleKey = normalizeTitleKey(normalized.title);
+      if (seenTitles.has(titleKey)) continue;
+
+      // Duration filter (if duration is 0, let it through — YTM sometimes omits duration)
+      if (normalized.duration > 0 && !isValidMusicTrack(normalized)) continue;
+
+      // Mark source as YT Music for transparency
+      seen.add(normalized.videoId);
+      seenTitles.add(titleKey);
+      results.push(normalized);
+    }
+
+    return results;
+  } catch (error) {
+    console.warn('[youtube.ts] YT Music song search failed:', error);
+    return [];
+  }
+}
+
+/**
+ * search()
+ *
+ * Combined search: YT Music songs (top priority) + regular YouTube videos.
+ * YT Music results come first (up to `limit`), then remaining slots are filled
+ * with regular YouTube results, deduped by title key.
+ */
 export async function search(query: string, limit: number = 10): Promise<VideoResult[]> {
+  // 1. Fetch YT Music songs (top priority)
+  const ytMusicResults = await searchMusicSongs(query, limit);
+
+  // If YT Music already fills all slots, return early
+  if (ytMusicResults.length >= limit) {
+    return ytMusicResults.slice(0, limit);
+  }
+
+  // 2. Fetch regular YouTube videos to fill remaining slots
   const yt = await getYouTube();
-  
-  // Apply Music category filter
   const results = await yt.search(query, { type: 'video' });
-  
-  // Blacklist keywords to filter out non-song content
-  const blacklist = [
-    'interview', 'podcast', 'reaction', 'review', 'analysis',
-    'trailer', 'teaser', 'explanation', 'news', 'case',
-    'arrest', 'arrested', 'mla', 'court', 'crime', 'police',
-    'exclusive', 'reporter', 'debate', 'breaking', 'politics',
-    'geopolitics', 'documentary', 'vlog', 'comedy', 'sketch',
-    'prank', 'challenge', 'gaming', 'walkthrough', 'speedrun',
-    'mod showcase', 'gameplay', 'stream highlights', 'tv'
-  ];
-  
-  // Filter duration: 1 min (60s) to 10 min (600s)
-  const MIN_DURATION = 60;
-  const MAX_DURATION = 600;
   
   const mapped: VideoResult[] = (results.videos as any[])
     .filter((video: any) => video && video.id && video.title)
     .map((video: any): VideoResult => {
-      // Use normalizeTrack for consistent extraction
       const normalized = normalizeTrack({
         id: video.id,
         title: video.title,
-        // Regular YT search results have author on the video object directly
         author: video.author,
         thumbnail: video.best_thumbnail || video.thumbnail,
         duration: video.duration,
@@ -252,25 +370,25 @@ export async function search(query: string, limit: number = 10): Promise<VideoRe
         duration: video.duration?.seconds || 0,
         thumbnail: video.best_thumbnail?.url || '',
       };
-    });
+    })
+    .filter(isValidMusicTrack);
 
-  const videos = mapped
-    .filter((video) => video.duration >= MIN_DURATION && video.duration <= MAX_DURATION)
-    .filter((video) => {
-      // Remove videos with blacklist keywords in title or channel name
-      const titleLower = video.title.toLowerCase();
-      const artistLower = video.artist.toLowerCase();
-      return !blacklist.some(keyword =>
-        titleLower.includes(keyword) || artistLower.includes(keyword)
-      );
-    });
-  
-  // Prioritize Topic channels (e.g., "Artist - Topic")
-  const topicVideos = videos.filter(video => video.artist.includes('- Topic'));
-  const otherVideos = videos.filter(video => !video.artist.includes('- Topic'));
-  
-  // Return Topic videos first, then others
-  return [...topicVideos, ...otherVideos].slice(0, limit);
+  // 3. Merge: YT Music first, then YouTube — dedup by title key
+  const seenIds = new Set(ytMusicResults.map(r => r.videoId));
+  const seenTitles = new Set(ytMusicResults.map(r => normalizeTitleKey(r.title)));
+
+  const merged = [...ytMusicResults];
+  for (const video of mapped) {
+    if (merged.length >= limit) break;
+    if (seenIds.has(video.videoId)) continue;
+    const titleKey = normalizeTitleKey(video.title);
+    if (seenTitles.has(titleKey)) continue;
+    seenIds.add(video.videoId);
+    seenTitles.add(titleKey);
+    merged.push(video);
+  }
+
+  return merged.slice(0, limit);
 }
 
 export async function getMetadata(videoId: string) {

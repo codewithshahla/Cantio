@@ -90,6 +90,9 @@ function normalizeTrack(track: Partial<Track> & { videoId: string }): Track | nu
   if (!title) return null;
 
   let artist = (track.artist || '').trim();
+  // Strip YouTube's "- Topic" suffix from auto-generated topic channels
+  artist = artist.replace(/\s*-\s*Topic$/i, '').trim();
+  
   const artistLower = artist.toLowerCase();
   if (!artist || artistLower === 'unknown' || artistLower === 'unknown artist') {
     // Keep as-is — the backend is the authoritative normalization layer.

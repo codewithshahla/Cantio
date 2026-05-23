@@ -1,7 +1,7 @@
 import { useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Search as SearchIcon, Heart, Plus, ListMusic, Disc3, Mic2, PlayCircle, X } from 'lucide-react';
+import { Search as SearchIcon, Heart, Plus, ListMusic, Disc3, Mic2, PlayCircle, X, Music } from 'lucide-react';
 import { usePlayer } from '../services/player';
 import { Track } from '../lib/cache';
 import { AddToPlaylistDropdown } from '../components/AddToPlaylistDropdown';
@@ -214,12 +214,20 @@ export function SearchPage() {
                   onClick={() => handlePlay(track, index)}
                   className="flex items-center gap-2.5 sm:gap-3 px-2 sm:px-3 py-2 sm:py-2.5 rounded-lg hover:bg-white/10 active:bg-white/15 cursor-pointer group touch-manipulation"
                 >
-                  <img
-                    src={track.thumbnail}
-                    alt={track.title}
-                    loading="lazy"
-                    className="w-10 h-10 sm:w-12 sm:h-12 rounded-lg object-cover flex-shrink-0"
-                  />
+                  <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-lg flex-shrink-0 overflow-hidden bg-white/5 relative">
+                    <div className="absolute inset-0 flex items-center justify-center">
+                      <Music size={20} className="text-gray-500" />
+                    </div>
+                    {track.thumbnail && (
+                      <img
+                        src={track.thumbnail}
+                        alt=""
+                        loading="lazy"
+                        className="relative w-full h-full object-cover"
+                        onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                      />
+                    )}
+                  </div>
                   <div className="flex-1 min-w-0">
                     <p className={`text-sm font-medium truncate ${isPlaying ? 'text-green-500' : 'text-white'}`}>
                       {track.title}
@@ -320,13 +328,18 @@ export function SearchPage() {
                     onClick={() => handleMusicCardClick('playlist', item.playlistId)}
                     className="bg-white/5 hover:bg-white/10 active:bg-white/15 rounded-xl p-2 sm:p-3 cursor-pointer transition-colors group touch-manipulation"
                   >
-                    <div className="relative mb-3">
-                      <img
-                        src={item.thumbnail || '/offline.html'}
-                        alt={item.title}
-                        onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
-                        className="w-full aspect-square object-cover rounded-lg"
-                      />
+                    <div className="relative mb-3 w-full aspect-square rounded-lg overflow-hidden bg-white/5">
+                      <div className="absolute inset-0 flex items-center justify-center">
+                        <PlayCircle size={32} className="text-gray-500" />
+                      </div>
+                      {item.thumbnail && (
+                        <img
+                          src={item.thumbnail}
+                          alt=""
+                          onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                          className="relative w-full h-full object-cover"
+                        />
+                      )}
                     </div>
                     <p className="text-sm font-semibold text-white truncate">{item.title}</p>
                     <p className="text-xs text-gray-400 truncate mt-0.5">{item.author}</p>
@@ -347,13 +360,18 @@ export function SearchPage() {
                     onClick={() => handleMusicCardClick('album', item.browseId)}
                     className="bg-white/5 hover:bg-white/10 active:bg-white/15 rounded-xl p-2 sm:p-3 transition-colors cursor-pointer touch-manipulation"
                   >
-                    <div className="mb-3">
-                      <img
-                        src={item.thumbnail || '/offline.html'}
-                        alt={item.title}
-                        onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
-                        className="w-full aspect-square object-cover rounded-lg"
-                      />
+                    <div className="mb-3 w-full aspect-square rounded-lg overflow-hidden bg-white/5 relative">
+                      <div className="absolute inset-0 flex items-center justify-center">
+                        <Disc3 size={32} className="text-gray-500" />
+                      </div>
+                      {item.thumbnail && (
+                        <img
+                          src={item.thumbnail}
+                          alt=""
+                          onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                          className="relative w-full h-full object-cover"
+                        />
+                      )}
                     </div>
                     <p className="text-sm font-semibold text-white truncate">{item.title}</p>
                     <p className="text-xs text-gray-400 truncate mt-0.5">{item.artist}</p>
@@ -372,13 +390,18 @@ export function SearchPage() {
                     onClick={() => handleMusicCardClick('artist', item.browseId)}
                     className="bg-white/5 hover:bg-white/10 active:bg-white/15 rounded-xl p-2 sm:p-3 transition-colors text-center cursor-pointer touch-manipulation"
                   >
-                    <div className="mb-3">
-                      <img
-                        src={item.thumbnail || '/offline.html'}
-                        alt={item.name}
-                        onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
-                        className="w-full aspect-square object-cover rounded-full"
-                      />
+                    <div className="mb-3 w-full aspect-square rounded-full overflow-hidden bg-white/5 relative">
+                      <div className="absolute inset-0 flex items-center justify-center">
+                        <Mic2 size={32} className="text-gray-500" />
+                      </div>
+                      {item.thumbnail && (
+                        <img
+                          src={item.thumbnail}
+                          alt=""
+                          onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                          className="relative w-full h-full object-cover"
+                        />
+                      )}
                     </div>
                     <p className="text-sm font-semibold text-white truncate">{item.name}</p>
                     {item.subscribers && (

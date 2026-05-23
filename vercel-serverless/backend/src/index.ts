@@ -7,7 +7,7 @@ import jwt from '@fastify/jwt';
 import rateLimit from 'fastify-rate-limit';
 import { config } from 'dotenv';
 import { randomBytes } from 'crypto';
-import { search, getMetadata, searchMusic, getYTMusicPlaylistTracks, getYTMusicAlbumTracks, getYTMusicArtistTopTracks, getRelatedTracks } from './lib/youtube.js';
+import { search, getMetadata, searchMusic, searchMusicSongs, getYTMusicPlaylistTracks, getYTMusicAlbumTracks, getYTMusicArtistTopTracks, getRelatedTracks } from './lib/youtube.js';
 import authRoutes from './routes/auth.js';
 import likesRoutes from './routes/likes.js';
 import playlistsRoutes from './routes/playlists.js';

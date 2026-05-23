@@ -1,19 +1,23 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Music, Play, ChevronLeft, Loader2, Share2 } from 'lucide-react';
+import { Music, Play, ChevronLeft, Loader2, Share2, Library, Check } from 'lucide-react';
 import { usePlaylist, Playlist, PlaylistTrack } from '../lib/playlistStore';
 import { usePlayer } from '../services/player';
+import { useAuth } from '../lib/authStore';
 
 export function PublicPlaylistPage() {
   const { id, slug } = useParams<{ id?: string; slug?: string }>();
   const playlistIdentifier = slug || id;
   const navigate = useNavigate();
-  const { getPublicPlaylist } = usePlaylist();
+  const { getPublicPlaylist, createPlaylist, addTracksToPlaylist, fetchPlaylists } = usePlaylist();
   const { play, replaceQueue, currentTrack, state } = usePlayer();
+  const { user, isAuthenticated } = useAuth();
   const [playlist, setPlaylist] = useState<Playlist | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
 
   useEffect(() => {
     if (playlistIdentifier) {
@@ -38,6 +42,8 @@ export function PublicPlaylistPage() {
     }
   };
 
+  const isMyPlaylist = playlist && user && playlist.userId === user.id;
+
   const handleShare = async () => {
     if (!playlist) return;
     const url = playlist.shareSlug
@@ -58,6 +64,39 @@ export function PublicPlaylistPage() {
       if (err instanceof Error && err.name !== 'AbortError') {
         console.error('Share failed:', err);
       }
+    }
+  };
+
+  const handleSaveToLibrary = async () => {
+    if (!playlist?.tracks || playlist.tracks.length === 0 || !isAuthenticated) return;
+    setSaving(true);
+    try {
+      // Create a new playlist with the same name
+      const newPlaylist = await createPlaylist(playlist.name, playlist.description || undefined);
+
+      // Bulk-add all tracks to the new playlist
+      const tracksToAdd = playlist.tracks.map(t => ({
+        trackId: t.trackId,
+        title: t.title,
+        artist: t.artist,
+        thumbnail: t.thumbnail || undefined,
+        duration: t.duration || undefined,
+      }));
+      await addTracksToPlaylist(newPlaylist.id, tracksToAdd);
+
+      // Refresh playlists list
+      await fetchPlaylists(true);
+
+      setSaved(true);
+      console.log('✅ Playlist saved to library:', newPlaylist.id);
+
+      // Reset saved state after 3 seconds
+      setTimeout(() => setSaved(false), 3000);
+    } catch (err: any) {
+      console.error('Failed to save playlist to library:', err);
+      alert(err.message || 'Failed to save playlist');
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -149,7 +188,7 @@ export function PublicPlaylistPage() {
             <span>•</span>
             <span>{tracks.length} {tracks.length === 1 ? 'song' : 'songs'}</span>
           </div>
-          <div className="flex items-center gap-3 mt-4">
+          <div className="flex items-center gap-3 mt-4 flex-wrap">
             {tracks.length > 0 && (
               <motion.button
                 whileHover={{ scale: 1.05 }}
@@ -167,6 +206,38 @@ export function PublicPlaylistPage() {
               <Share2 size={16} />
               Share
             </button>
+
+            {/* Save to Library — shown only for logged-in users viewing someone else's playlist */}
+            {isAuthenticated && !isMyPlaylist && tracks.length > 0 && (
+              <motion.button
+                whileHover={{ scale: 1.03 }}
+                whileTap={{ scale: 0.97 }}
+                onClick={handleSaveToLibrary}
+                disabled={saving || saved}
+                className={`flex items-center gap-2 px-4 py-2 rounded-full text-sm font-semibold transition-all ${
+                  saved
+                    ? 'bg-green-500/20 text-green-400 border border-green-500/30'
+                    : 'bg-purple-600 hover:bg-purple-500 text-white'
+                } disabled:opacity-70 disabled:cursor-not-allowed`}
+              >
+                {saving ? (
+                  <>
+                    <Loader2 size={16} className="animate-spin" />
+                    Saving...
+                  </>
+                ) : saved ? (
+                  <>
+                    <Check size={16} />
+                    Saved to Library
+                  </>
+                ) : (
+                  <>
+                    <Library size={16} />
+                    Save to Library
+                  </>
+                )}
+              </motion.button>
+            )}
           </div>
         </div>
       </div>
