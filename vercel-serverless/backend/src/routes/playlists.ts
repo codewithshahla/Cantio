@@ -116,7 +116,6 @@ export default async function playlistsRoutes(fastify: FastifyInstance) {
           _count: { select: { tracks: true } },
         },
         orderBy: { updatedAt: 'desc' },
-        cacheStrategy: { ttl: 60, swr: 30 }
       });
 
       return { playlists };
@@ -192,7 +191,6 @@ export default async function playlistsRoutes(fastify: FastifyInstance) {
             select: { id: true, username: true, name: true, avatar: true }
           },
         },
-        cacheStrategy: { ttl: 60, swr: 30 }
       });
 
       if (!playlist) {

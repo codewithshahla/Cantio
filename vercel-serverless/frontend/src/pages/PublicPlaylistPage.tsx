@@ -75,16 +75,22 @@ export function PublicPlaylistPage() {
       const newPlaylist = await createPlaylist(playlist.name, playlist.description || undefined);
 
       // Bulk-add all tracks to the new playlist
+      // Note: duration must be positive or undefined per backend schema
       const tracksToAdd = playlist.tracks.map(t => ({
         trackId: t.trackId,
         title: t.title,
-        artist: t.artist,
+        artist: t.artist || 'Unknown Artist',
         thumbnail: t.thumbnail || undefined,
-        duration: t.duration || undefined,
+        duration: (t.duration && t.duration > 0) ? t.duration : undefined,
       }));
-      await addTracksToPlaylist(newPlaylist.id, tracksToAdd);
 
-      // Refresh playlists list
+      try {
+        await addTracksToPlaylist(newPlaylist.id, tracksToAdd);
+      } catch (bulkErr) {
+        console.warn('Bulk add had issues, playlist created but some tracks may be missing:', bulkErr);
+      }
+
+      // Refresh playlists list to get the real server state
       await fetchPlaylists(true);
 
       setSaved(true);
