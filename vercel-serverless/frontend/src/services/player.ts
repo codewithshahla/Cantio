@@ -123,6 +123,42 @@ let playerStoreInitPromise: Promise<void> | null = null;
 let playerInstanceInitialized = false;
 let sleepTimerId: number | null = null;
 
+/**
+ * Register ALL media session action handlers.
+ * Called both at init() and every time a track starts playing so that
+ * the browser never loses the handlers between sessions or after the
+ * media session goes idle (which resets next/prev/seek on some browsers).
+ */
+function registerAllMediaSessionHandlers(get: () => PlayerStore) {
+  mediaSessionManager.setHandlers({
+    play: () => {
+      if (get().state !== 'playing') get().togglePlay();
+    },
+    pause: () => {
+      if (get().state === 'playing') get().togglePlay();
+    },
+    nextTrack: () => get().next(),
+    previousTrack: () => get().prev(),
+    stop: () => {
+      if (get().state === 'playing') get().togglePlay();
+      mediaSessionManager.updatePlaybackState('paused');
+    },
+    seekBackward: (details: any) => {
+      const { progress } = get();
+      const offset = typeof details?.seekOffset === 'number' ? details.seekOffset : 10;
+      get().seek(Math.max(0, progress - offset));
+    },
+    seekForward: (details: any) => {
+      const { progress, duration } = get();
+      const offset = typeof details?.seekOffset === 'number' ? details.seekOffset : 10;
+      get().seek(Math.min(duration || progress + offset, progress + offset));
+    },
+    seekTo: (details: any) => {
+      if (details.seekTime !== undefined) get().seek(details.seekTime);
+    },
+  });
+}
+
 const isStandalonePwa = () => {
   if (typeof window === 'undefined') return false;
   const navStandalone = (window.navigator as any).standalone === true;
@@ -330,45 +366,11 @@ export const usePlayer = create<PlayerStore>((set, get) => ({
       });
     }
     
-    // Register media session handlers for background playback
-    // Always register ALL handlers regardless of PWA/browser/Electron mode so that
-    // next/previous/seek controls work in system notifications on every platform.
-    mediaSessionManager.setHandlers({
-      play: () => {
-        if (get().state !== 'playing') {
-          get().togglePlay();
-        }
-      },
-      pause: () => {
-        if (get().state === 'playing') {
-          get().togglePlay();
-        }
-      },
-      nextTrack: () => get().next(),
-      previousTrack: () => get().prev(),
-      stop: () => {
-        if (get().state === 'playing') {
-          get().togglePlay();
-        }
-        mediaSessionManager.updatePlaybackState('paused');
-      },
-      seekBackward: (details) => {
-        const { progress } = get();
-        const localOffset = typeof details?.seekOffset === 'number' ? details.seekOffset : 10;
-        get().seek(Math.max(0, progress - localOffset));
-      },
-      seekForward: (details) => {
-        const { progress, duration } = get();
-        const localOffset = typeof details?.seekOffset === 'number' ? details.seekOffset : 10;
-        const maxDuration = duration || progress + localOffset;
-        get().seek(Math.min(maxDuration, progress + localOffset));
-      },
-      seekTo: (details) => {
-        if (details.seekTime !== undefined) {
-          get().seek(details.seekTime);
-        }
-      },
-    });
+    // Register ALL media session handlers (play/pause/next/prev/seek/stop).
+    // This runs at init so handlers are ready immediately on first play.
+    // They are also re-registered on every _playInternal() call to ensure
+    // the browser never silently drops them between tracks or sessions.
+    registerAllMediaSessionHandlers(get);
     
     // Keyboard media controls for PC (F9-F12)
     // F9: Search (not implemented here, handled by UI)
@@ -808,8 +810,12 @@ export const usePlayer = create<PlayerStore>((set, get) => ({
 
     console.log('🎵 Playing track:', track.title, 'by', track.artist);
 
-    // Update media session metadata for background playback
+    // Update media session metadata + re-register all handlers.
+    // Browsers (especially Chrome on Android) can drop next/prev/seek handlers
+    // when the media session goes idle between tracks. Re-registering here
+    // ensures the notification controls are always fully wired on each new track.
     mediaSessionManager.updateMetadata(track);
+    registerAllMediaSessionHandlers(get);
     mediaSessionManager.updatePlaybackState('playing');
 
     try {

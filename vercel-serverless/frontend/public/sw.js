@@ -1,5 +1,5 @@
 // Service Worker for Cantio PWA
-const CACHE_VERSION = Date.now(); // Change on every deployment
+const CACHE_VERSION = `2-${Date.now()}`; // bump prefix to force-bust old caches on this deploy
 const CACHE_NAME = `cantio-v${CACHE_VERSION}`;
 const OFFLINE_URL = '/offline.html';
 
