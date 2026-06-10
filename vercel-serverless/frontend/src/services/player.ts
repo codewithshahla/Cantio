@@ -331,57 +331,44 @@ export const usePlayer = create<PlayerStore>((set, get) => ({
     }
     
     // Register media session handlers for background playback
-    if (isStandalonePwa()) {
-      mediaSessionManager.setHandlers({
-        play: () => {
-          if (get().state !== 'playing') {
-            get().togglePlay();
-          }
-        },
-        pause: () => {
-          if (get().state === 'playing') {
-            get().togglePlay();
-          }
-        },
-      });
-    } else {
-      mediaSessionManager.setHandlers({
-        play: () => {
-          if (get().state !== 'playing') {
-            get().togglePlay();
-          }
-        },
-        pause: () => {
-          if (get().state === 'playing') {
-            get().togglePlay();
-          }
-        },
-        nextTrack: () => get().next(),
-        previousTrack: () => get().prev(),
-        stop: () => {
-          if (get().state === 'playing') {
-            get().togglePlay();
-          }
-          mediaSessionManager.updatePlaybackState('paused');
-        },
-        seekBackward: (details) => {
-          const { progress } = get();
-          const localOffset = typeof details?.seekOffset === 'number' ? details.seekOffset : 10;
-          get().seek(Math.max(0, progress - localOffset));
-        },
-        seekForward: (details) => {
-          const { progress, duration } = get();
-          const localOffset = typeof details?.seekOffset === 'number' ? details.seekOffset : 10;
-          const maxDuration = duration || progress + localOffset;
-          get().seek(Math.min(maxDuration, progress + localOffset));
-        },
-        seekTo: (details) => {
-          if (details.seekTime !== undefined) {
-            get().seek(details.seekTime);
-          }
-        },
-      });
-    }
+    // Always register ALL handlers regardless of PWA/browser/Electron mode so that
+    // next/previous/seek controls work in system notifications on every platform.
+    mediaSessionManager.setHandlers({
+      play: () => {
+        if (get().state !== 'playing') {
+          get().togglePlay();
+        }
+      },
+      pause: () => {
+        if (get().state === 'playing') {
+          get().togglePlay();
+        }
+      },
+      nextTrack: () => get().next(),
+      previousTrack: () => get().prev(),
+      stop: () => {
+        if (get().state === 'playing') {
+          get().togglePlay();
+        }
+        mediaSessionManager.updatePlaybackState('paused');
+      },
+      seekBackward: (details) => {
+        const { progress } = get();
+        const localOffset = typeof details?.seekOffset === 'number' ? details.seekOffset : 10;
+        get().seek(Math.max(0, progress - localOffset));
+      },
+      seekForward: (details) => {
+        const { progress, duration } = get();
+        const localOffset = typeof details?.seekOffset === 'number' ? details.seekOffset : 10;
+        const maxDuration = duration || progress + localOffset;
+        get().seek(Math.min(maxDuration, progress + localOffset));
+      },
+      seekTo: (details) => {
+        if (details.seekTime !== undefined) {
+          get().seek(details.seekTime);
+        }
+      },
+    });
     
     // Keyboard media controls for PC (F9-F12)
     // F9: Search (not implemented here, handled by UI)
@@ -514,7 +501,8 @@ export const usePlayer = create<PlayerStore>((set, get) => ({
               navigator.mediaSession.playbackState = 'playing';
             }
             
-            // Start progress tracking
+            // Start progress tracking (throttled to ~1Hz for media session updates)
+            let lastPositionUpdate = 0;
             const trackProgress = () => {
               if (get().state === 'playing' && get().ytPlayer) {
                 try {
@@ -522,13 +510,24 @@ export const usePlayer = create<PlayerStore>((set, get) => ({
                   const duration = player.getDuration();
                   set({ progress: currentTime || 0, duration: duration || 0 });
                   
-                  // Update media session position state for background playback
-                  if ('mediaSession' in navigator && 'setPositionState' in navigator.mediaSession) {
+                  // Update media session position state for background playback.
+                  // Only update when we have a valid duration > 0 — calling
+                  // setPositionState with duration: 0 causes browsers to hide/disable
+                  // seek, next, and previous controls in the system notification.
+                  // Throttle to once per second to avoid spamming the browser.
+                  const now = Date.now();
+                  if (
+                    duration > 0 &&
+                    now - lastPositionUpdate >= 1000 &&
+                    'mediaSession' in navigator &&
+                    'setPositionState' in navigator.mediaSession
+                  ) {
+                    lastPositionUpdate = now;
                     try {
                       navigator.mediaSession.setPositionState({
-                        duration: duration || 0,
+                        duration,
                         playbackRate: 1,
-                        position: currentTime || 0,
+                        position: Math.min(currentTime || 0, duration),
                       });
                     } catch (e) {
                       // Some browsers don't support setPositionState
